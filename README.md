@@ -17,22 +17,22 @@ Web client for [Codync](https://github.com/leepokai/Codync).
 
 ## Feature parity
 
-**Works**
-
-- Bots, group chats, streaming replies, permissions
-- Multiple computers, direct or through the relay
-- Pairing with `codync-host pair`
-- Offline messages (relay mailbox)
-- Account sign-in with an email code
-- Files, artifacts, extensions, routines, usage, voice calls
-- Settings, themes, notifications
-
-**Missing**
-
-- Apple and Google sign-in
-- Managing a computer's own host (use the desktop app or `codync-host`)
-- SSH computers
-- Bot import
-- On-device speech, menu bar, notch island
-- Notifications with the tab closed
-- QR scanning
+| Feature | Web |
+| --- | :---: |
+| Bots, group chats, streaming replies | ✅ |
+| Permission approvals | ✅ |
+| Multiple computers | ✅ |
+| Direct and relay connections | ✅ |
+| Pairing with `codync-host pair` | ✅ |
+| Offline messages | ✅ |
+| Files and artifacts | ✅ |
+| Extensions and routines | ✅ |
+| Usage and voice calls | ✅ |
+| Account sign-in | ✅ Email code |
+| Apple and Google sign-in | ❌ |
+| Managing the computer's own host | ❌ |
+| SSH computers | ❌ |
+| Bot import | ❌ |
+| On-device speech, menu bar, notch island | ❌ |
+| Notifications with the tab closed | ❌ |
+| QR scanning | ❌ Paste the link |
