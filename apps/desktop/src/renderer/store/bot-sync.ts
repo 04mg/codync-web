@@ -71,7 +71,7 @@ export class BotSync extends BotMirror {
     if (this.connection.kind !== 'online') this.setConnection({ kind: 'connecting' })
     const transport = this.makeTransport()
     this.client = new HostClient(transport)
-    this.hostRoute = this.isLoopback ? 'loopback' : null
+    this.hostRoute = this.isLoopback ? 'loopback' : (transport.route?.() ?? null)
     this.runEvents(this.client)
   }
 
@@ -165,6 +165,7 @@ export class BotSync extends BotMirror {
             'desktop',
             (event) => {
               if (!alive()) return
+              if (!this.isLoopback) this.hostRoute = client.transport.route?.() ?? null
               this.setConnection({ kind: 'online' })
               backoff = 1000
               this.apply(event)
@@ -177,7 +178,9 @@ export class BotSync extends BotMirror {
         if (!alive()) return
         const message = error instanceof Error ? error.message : String(error)
         this.finishRefresh?.(new Error(message))
-        this.setConnection({ kind: 'offline', message })
+        if (error instanceof HostError && error.offline) this.setConnection({ kind: 'computerOffline', lastSeen: error.offline.lastSeen })
+        else if (error instanceof HostError && error.status === 401 && !this.isLoopback) return this.setConnection({ kind: 'unauthorized', message })
+        else this.setConnection({ kind: 'offline', message })
         if (error instanceof HostError && error.status === 401) return
       }
       if (!alive()) return

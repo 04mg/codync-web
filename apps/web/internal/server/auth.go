@@ -261,8 +261,16 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleSession tells the page whether it's signed in, and the app its settings (all public).
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"signedIn": s.auth.Valid(r), "required": s.auth != nil})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"signedIn":            s.auth.Valid(r),
+		"required":            s.auth != nil,
+		"version":             s.cfg.Version,
+		"allowLocalCloud":     s.cfg.Targets.AllowPlainLoopbackCloud,
+		"cloudURL":            s.cfg.CloudURL,
+		"clerkPublishableKey": s.cfg.ClerkPublishableKey,
+	})
 }
 
 // clientIP is the peer address, or the proxy's X-Forwarded-For when the proxy is trusted.

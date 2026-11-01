@@ -14,13 +14,15 @@ import type { Artifact, ArtifactChunk, LibraryItem } from '@shared/artifacts'
 import { parseCallCue, type CallCue } from '@shared/calls'
 import type { NetworkView } from '@shared/network'
 
-/** How a client reaches a host API. Only loopback today: the computer's own host or an SSH tunnel. */
+/** How a client reaches a host API: loopback (this computer's host or an SSH tunnel), or the end-to-end encrypted channel directly or through the relay (the web client). */
 export type HostRoute = 'loopback' | 'direct' | 'relay'
 
 export class HostError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The relay says the computer is offline (last seen, ms). */
+    readonly offline: { lastSeen: number | null } | null = null,
   ) {
     super(message)
   }
@@ -39,6 +41,12 @@ export interface HostTransport {
   call(method: string, body: unknown, timeoutMs: number): Promise<unknown>
   /** Each element is one event's JSON (what SSE puts after `data:`). */
   stream(path: string, onData: (line: string) => void, onEnd: (error: HostError | null) => void): () => void
+  /** The route the link is up on; loopback when absent. */
+  route?(): HostRoute | null
+  /** The relay can keep a message for this offline computer (the mailbox, spec §6.4). */
+  canQueue?(): boolean
+  /** Leaves a `send` in the relay's mailbox; the computer picks it up when it's back. */
+  queueSend?(body: { botId: string; text: string; clientNonce: string }): Promise<void>
 }
 
 export class LoopbackTransport implements HostTransport {

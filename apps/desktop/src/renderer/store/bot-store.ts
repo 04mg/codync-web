@@ -71,6 +71,7 @@ export class BotStore extends BotSync {
       turn: 0, data, createdAt: Date.now(), updatedAt: 0,
     })
     this.changed()
+    if (!files.length && !replyTo && !call && !pasted.length && this.canQueue) return void this.queue(botId, trimmed, nonce)
     void (async () => {
       try {
         // Safe to repeat: the computer skips a nonce it already has.
@@ -96,6 +97,27 @@ export class BotStore extends BotSync {
         this.markLocal(nonce, botId, 'failed')
       }
     })()
+  }
+
+  /** Leaves the message in the relay's mailbox while the computer is offline (spec §6.4); it arrives when it's back. */
+  private async queue(botId: string, text: string, nonce: string) {
+    try {
+      const transport = this.client?.transport
+      if (!transport?.queueSend) throw new Error('Your computer is offline.')
+      await transport.queueSend({ botId, text, clientNonce: nonce })
+      this.markLocal(nonce, botId, 'queued')
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error)
+      this.markLocal(nonce, botId, 'failed')
+    }
+  }
+
+  /** The relay reports a queued message: delivered (its copy arrives with the events), or failed/expired. */
+  mailboxOutcome(nonce: string, delivered: boolean) {
+    if (delivered) return
+    for (const [botId, list] of this.entries) {
+      if (list.some((e) => e.id === `local-${nonce}`)) return this.markLocal(nonce, botId, 'failed')
+    }
   }
 
   /** Asks this computer to update itself while it's behind this app (`installHostUpdate`). */

@@ -17,7 +17,8 @@ export function AccountWelcomeView({ onContinue }: { onContinue: () => void }) {
   const account = useAccount()
   const reduce = useReduceMotion()
   const tr = useTr()
-  const onThis = tr(deviceName === 'Mac' ? 'Continue on this Mac' : 'Continue on this computer')
+  // The web client runs no host: without an account it goes on to pairing its computers.
+  const onThis = tr(window.codync.runtime === 'web' ? 'Continue without an account' : deviceName === 'Mac' ? 'Continue on this Mac' : 'Continue on this computer')
   const [beat, setBeat] = useState(reduce ? 4 : 0)
 
   useEffect(() => {
@@ -67,6 +68,14 @@ export function AccountWelcomeView({ onContinue }: { onContinue: () => void }) {
           <Button onClick={onContinue} className="welcome-button">
             {onThis}
           </Button>
+          {account.signsInByEmail ? (
+            <Button kind="secondary" onClick={() => account.openEmailSignIn()} disabled={!account.isConfigured || account.isBusy} className="welcome-button">
+              <HStack as="span" gap={10}>
+                <Icon name="envelope" size={18} />
+                {tr('Continue with email')}
+              </HStack>
+            </Button>
+          ) : <>
           <Button onClick={() => void account.signIn('apple')} disabled={!account.isConfigured || account.isBusy} className="welcome-button">
             {account.isBusy ? (
               <Spinner size={18} />
@@ -87,7 +96,10 @@ export function AccountWelcomeView({ onContinue }: { onContinue: () => void }) {
               </HStack>
             )}
           </Button>
-          {!account.isConfigured ? (
+          </>}
+          {!account.isConfigured && window.codync.runtime === 'web' ? (
+            <Text as="div" size="footnote" tone="tertiary">{tr('Account sign-in is off on this server. You can still pair your computers with a link.')}</Text>
+          ) : !account.isConfigured ? (
             <Text as="div" size="footnote" tone="tertiary">{tr(deviceName === 'Mac' ? "Sign-in isn't configured in this build. You can still use Codync on this Mac." : "Sign-in isn't configured in this build. You can still use Codync on this computer.")}</Text>
           ) : null}
           {account.errorMessage ? <Text as="div" size="footnote" tone="attention">{account.errorMessage}</Text> : null}

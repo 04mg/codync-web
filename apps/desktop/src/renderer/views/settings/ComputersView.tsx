@@ -280,7 +280,7 @@ function ManagedComputerCard({ store, ssh: overSSH, nested = false }: { store: B
 }
 
 /** The Codync a computer runs, and its update when one is due (iOS `CodyncVersionRow`). */
-function CodyncVersionRow({ store }: { store: BotStore }) {
+export function CodyncVersionRow({ store }: { store: BotStore }) {
   const tr = useTr()
   // Moved on when an update asked from here runs out of time, so one that never finished is offered again.
   const [now, setNow] = useState(Date.now)

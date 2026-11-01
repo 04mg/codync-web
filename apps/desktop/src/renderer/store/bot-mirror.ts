@@ -124,9 +124,9 @@ export class BotMirror extends Observable {
     return k === 'computerOffline' || k === 'offline' || k === 'unauthorized'
   }
 
-  /** Loopback has no relay mailbox. */
+  /** The relay's mailbox can keep a message for this computer while it's offline (loopback has none). */
   get canQueue() {
-    return false
+    return this.connection.kind === 'computerOffline' && (this.client?.transport.canQueue?.() ?? false)
   }
 
   /** What headers show: a reconnect the grace period keeps quiet reads "Connecting…" while an action waits. */

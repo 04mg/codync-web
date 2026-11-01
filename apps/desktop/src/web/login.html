@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <title>Sign in · Codync</title>
+    <link rel="stylesheet" href="./login.css" />
+  </head>
+  <body>
+    <main class="card">
+      <img class="icon" src="./icon.png" alt="" width="72" height="72" />
+      <h1>Codync</h1>
+      <p class="lead">Enter this server's access key to open Codync.</p>
+      <form id="form" autocomplete="on">
+        <input id="secret" name="password" type="password" autocomplete="current-password" placeholder="Access key" aria-label="Access key" required autofocus />
+        <button id="submit" type="submit">Sign in</button>
+        <p id="error" class="error" role="alert" hidden></p>
+      </form>
+      <p class="hint">On the server, <code>codync-web access-key</code> shows the key.</p>
+    </main>
+    <script type="module" src="./login.ts"></script>
+  </body>
+</html>

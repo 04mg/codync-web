@@ -57,10 +57,12 @@ export function AccountPanelLayer({ compact, approvals, onDismiss, onUsage, onSe
   const signedIn = user !== null
   const auth: PanelItem[] = signedIn
     ? [{ title: isBusy ? 'Please wait…' : 'Sign out', icon: 'rectangle.portrait.and.arrow.right', disabled: isBusy, action: () => { onDismiss(); void account.signOut() } }]
-    : [
-        { title: 'Continue with Apple', icon: 'apple.logo', disabled: isBusy, action: () => { onDismiss(); void account.signIn('apple') } },
-        { title: 'Continue with Google', icon: 'person.crop.circle.badge.plus', image: googleLogo, disabled: isBusy, action: () => { onDismiss(); void account.signIn('google') } },
-      ]
+    : account.signsInByEmail
+      ? [{ title: 'Sign in with email', icon: 'envelope', disabled: isBusy, action: () => { onDismiss(); account.openEmailSignIn() } }]
+      : [
+          { title: 'Continue with Apple', icon: 'apple.logo', disabled: isBusy, action: () => { onDismiss(); void account.signIn('apple') } },
+          { title: 'Continue with Google', icon: 'person.crop.circle.badge.plus', image: googleLogo, disabled: isBusy, action: () => { onDismiss(); void account.signIn('google') } },
+        ]
   const open = (url: string, link: Link) => {
     onDismiss()
     openLink(url, link)

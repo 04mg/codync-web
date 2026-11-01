@@ -23,7 +23,7 @@ export function ArtifactFrame({ id, html, title, preview = false }: { id: string
   return (
     <iframe
       className={preview ? 'artifact-frame preview' : 'artifact-frame'}
-      src={artifactFrameURL(id, shown, preview)}
+      src={window.codync.artifacts.frameURL?.(id, shown, preview) ?? artifactFrameURL(id, shown, preview)}
       title={title}
       // Its own origin already keeps it from the app; same-origin lets the artifact keep its own storage. A card opens nothing.
       sandbox={preview ? 'allow-scripts allow-same-origin' : 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads'}

@@ -24,6 +24,10 @@ type Config struct {
 	// MaxBridges caps concurrent bridged sockets.
 	MaxBridges int
 	Version    string
+	// CloudURL is the Codync cloud for accounts; empty turns account sign-in off in the app.
+	CloudURL string
+	// ClerkPublishableKey is the account provider's public key for that cloud.
+	ClerkPublishableKey string
 }
 
 // Server serves the UI, the sign-in gate and the bridges.
@@ -69,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /auth/logout", s.sameOrigin(http.HandlerFunc(s.handleLogout)))
 	mux.Handle("GET /bridge/ws", s.signedIn(http.HandlerFunc(s.handleBridgeWS)))
 	mux.Handle("POST /bridge/http", s.sameOrigin(s.signedIn(http.HandlerFunc(s.handleBridgeHTTP))))
+	mux.HandleFunc("GET /artifact/", handleArtifactFallback)
 	mux.HandleFunc("GET /", s.handleUI)
 	return s.headers(mux)
 }
@@ -130,26 +135,17 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "index.html"
 	}
-	// The sign-in page and its files are public; the app needs a session.
-	public := strings.HasPrefix(name, "login") || name == "favicon.svg" || name == "icon.png"
-	if !public && !s.auth.Valid(r) {
-		if path.Ext(name) == "" || name == "index.html" {
-			s.serveFile(w, r, "login.html", appCSP)
-			return
-		}
-		http.Error(w, "sign in first", http.StatusUnauthorized)
-		return
-	}
-	if name == "login.html" && s.auth.Valid(r) {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
 	if _, err := fs.Stat(s.ui, name); err != nil {
 		if path.Ext(name) != "" {
 			http.NotFound(w, r)
 			return
 		}
 		name = "index.html"
+	}
+	// Static files are the open-source app itself; the page that runs it, like the bridges, needs a
+	// session, and without one the sign-in page answers instead.
+	if name == "index.html" && !s.auth.Valid(r) {
+		name = "login.html"
 	}
 	s.serveFile(w, r, name, appCSP)
 }
@@ -188,6 +184,17 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, name, csp str
 		return
 	}
 	http.ServeContent(w, r, info.Name(), info.ModTime().Truncate(time.Second), rs)
+}
+
+// handleArtifactFallback answers artifact frames the browser's artifact service worker didn't serve
+// (it wasn't running yet, or the browser bypassed it): never the app itself, always sandboxed.
+func handleArtifactFallback(w http.ResponseWriter, _ *http.Request) {
+	h := w.Header()
+	h.Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'")
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><p style="font: 14px system-ui; color: #888">Open this artifact from its chat again.</p>`))
 }
 
 // ErrNoUI is returned when the binary was built without the app.

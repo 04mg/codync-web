@@ -11,6 +11,8 @@ import type { Appearance } from './appearance'
 // and the renderer (stores and UI). Exposed as `window.codync` by the preload script.
 
 export type HostState =
+  /** This app runs no host of its own (the web client): every computer is reached remotely. */
+  | { kind: 'none' }
   | { kind: 'missingBinary' }
   | { kind: 'notInstalled' }
   | { kind: 'starting' }
@@ -146,8 +148,75 @@ export type SpeechEvent =
 /** A dropped, pasted or picked file: its name and bytes. */
 export type PickedFile = { name: string; data: Uint8Array }
 
+/** A computer reached over the end-to-end encrypted channel, as `RemoteComputersBridge` lists it. */
+export interface RemoteComputer {
+  id: string
+  name: string
+  /** How this device was authorized: a pairing link, or an approval through the account. */
+  source: 'pairing' | 'account'
+  /** When this device was paired (ms). */
+  pairedAt: number
+}
+
+/** A computer in the account this device asked to use (§4.2 B): its code to confirm on the computer. */
+export interface AccessAsk {
+  computerId: string
+  name: string
+  state: 'asking' | 'waitingForCode' | 'confirm' | 'approved' | 'denied' | 'expired' | 'failed'
+  /** The 6-digit code to compare on the computer, once both sides committed. */
+  sas: string | null
+  message: string | null
+}
+
+/**
+ * Computers this app reaches over Codync's end-to-end encrypted channel (spec §6, §7): the web
+ * client's way to every computer. Absent in the desktop app, which reaches computers over loopback.
+ */
+export interface RemoteComputersBridge {
+  /** Attaches every saved computer to the window's model; call once. */
+  start(app: import('../renderer/store/app-model').AppModel): void
+  list(): RemoteComputer[]
+  onChange(cb: () => void): () => void
+  /** Pairs with a `codync://pair?…` link (§4.1); resolves to the computer's name. */
+  pair(link: string): Promise<string>
+  /** Forgets a computer on this device; the computer keeps listing this device until it's revoked there. */
+  forget(computerId: string): Promise<void>
+  /** Account computers this device asked to use, with their codes. */
+  asks(): AccessAsk[]
+  /** Starts asking an account computer for access (commit-then-reveal SAS, §4.2 B). */
+  ask(computer: { computerId: string; name: string; signKey: string }): Promise<void>
+  /** Stops waiting for an ask (the request expires on its own). */
+  dismissAsk(computerId: string): void
+}
+
+/** What only the web client has: its tab's notifications, its keys, and its own server's session. */
+export interface BrowserBridge {
+  notifications: { supported: boolean; enabled(): boolean; set(on: boolean): Promise<boolean> }
+  /** The desktop menu's shortcuts as the browser takes them. */
+  shortcuts: { keys: string; title: string }[]
+  /** codync-web's version. */
+  serverVersion: string
+  /** Signs out of the codync-web server; null when it has no sign-in. */
+  signOut: (() => Promise<void>) | null
+}
+
+/** The account sign-in a browser can finish on its own: a code sent by email (no app redirect needed). */
+export interface EmailSignInBridge {
+  /** Sends a code to `email`; rejects with a message to show. */
+  start(email: string): Promise<void>
+  /** Finishes with the code from the email; rejects with a message to show. */
+  verify(code: string): Promise<void>
+  cancel(): void
+}
+
 export interface CodyncBridge {
   platform: 'darwin' | 'linux' | 'win32'
+  /** The desktop app (Electron), or the web client served by codync-web. */
+  runtime: 'desktop' | 'web'
+  /** The web client's computers; absent in the desktop app. */
+  remote?: RemoteComputersBridge
+  /** The web client's browser-only settings; absent in the desktop app. */
+  browser?: BrowserBridge
   appName: string
   appScheme: string
   hostPort: number
@@ -176,6 +245,8 @@ export interface CodyncBridge {
     signOut(): Promise<void>
     /** The signed-in session's JWT for the Codync cloud. */
     token(): Promise<string>
+    /** The web client signs in with an emailed code instead of an Apple or Google redirect. */
+    email?: EmailSignInBridge
   }
   /** On-device speech recognition (macOS: SFSpeechRecognizer in a helper; unavailable on Linux). */
   speech: {
@@ -236,6 +307,8 @@ export interface CodyncBridge {
   artifacts: {
     /** Makes `codync-artifact://<id>` serve this HTML. */
     show(id: string, html: Uint8Array): Promise<void>
+    /** Where a shown artifact's frame loads from, when not `codync-artifact://` (the web client's service worker). */
+    frameURL?(id: string, version: number, preview: boolean): string
     openInBrowser(id: string, html: Uint8Array): Promise<void>
   }
   files: {

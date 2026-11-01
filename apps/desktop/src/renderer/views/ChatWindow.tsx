@@ -33,6 +33,10 @@ import { AccountWelcomeView } from './AccountWelcomeView'
 import { ComputerAccessView } from './computer-access/ComputerAccessView'
 import { AccessOnboarding } from './computer-access/AccessOnboarding'
 import { HostStateView } from './HostStateView'
+import { EmailSignInSheet } from './web/EmailSignInSheet'
+import { FirstComputerView } from './web/FirstComputerView'
+import { PairComputerSheet } from './web/PairComputerSheet'
+import { takePairingLinkFromAddress } from './web/web-model'
 import { StartupRecovery } from './StartupRecovery'
 export { EmptyState } from './HostStateView'
 import { RefreshIndicator } from './RefreshIndicator'
@@ -62,7 +66,11 @@ export function ChatWindow() {
   const [upToDate, setUpToDate] = useState(false)
   useSSHAttachments(app)
   const ssh = useSSH()
-  const showsChat = shouldShowChat(app.host.state.kind, app.computers.length, ssh.state)
+  // The web client has no host of its own to wait for: its window is the chat from the start.
+  const showsChat = window.codync.runtime === 'web' || shouldShowChat(app.host.state.kind, app.computers.length, ssh.state)
+  useEffect(() => {
+    if (window.codync.remote) takePairingLinkFromAddress()
+  }, [])
   const finishAccess = (ready: boolean, onboarding: boolean) => {
     setAccessSetup(ready ? 'ready' : 'later')
     analytics.track({ event: 'computer_access_finished', ready, onboarding })
@@ -121,7 +129,10 @@ export function ChatWindow() {
   const approval = app.currentApproval
   return (
     <div className="chat-window">
-      <Summaries />
+      {/* The menu bar and the notch island are the desktop app's; the web client has neither. */}
+      {window.codync.runtime === 'desktop' ? <Summaries /> : null}
+      {window.codync.remote ? <PairComputerSheet /> : null}
+      {window.codync.account.email ? <EmailSignInSheet /> : null}
       <RefreshIndicator />
       {onboarded ? (
         accessSetup === null ? (
@@ -348,6 +359,8 @@ function ChatSplitView() {
         <ThreadView key={refKey(selected)} botId={selected.botId} />
       </StoreContext.Provider>
     )
+  } else if (window.codync.remote && !app.computers.length) {
+    detail = <FirstComputerView manage={() => setSettings('computers')} />
   } else if (!onlineStores.length && ssh.state.profiles.length) {
     detail = <StartupRecovery manage={() => setSettings('computers')} />
   } else {

@@ -25,12 +25,12 @@ export function b64url(bytes: Uint8Array): string {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-export function unb64url(s: string): Uint8Array {
+export function unb64url(s: string): Uint8Array<ArrayBuffer> {
   if (!/^[A-Za-z0-9_-]*$/.test(s)) throw new Error('not base64url')
   return Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))
 }
 
-export function concat(...parts: Uint8Array[]): Uint8Array {
+export function concat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
   let at = 0
   for (const p of parts) {

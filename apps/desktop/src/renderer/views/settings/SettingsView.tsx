@@ -23,6 +23,8 @@ import { errorText, isMac, thisMac } from './parts'
 import { UsageLimits } from './UsageLimits'
 import { VoiceChatSettingsView } from './VoiceChatSettingsView'
 import { ComputerAccessView } from '../computer-access/ComputerAccessView'
+import { BrowserSettings } from '../web/BrowserSettings'
+import { WebComputersView } from '../web/WebComputersView'
 import { FormSheet } from '../marketplace/pieces'
 import { AnalyticsSheet } from './AnalyticsSheet'
 import { HiddenBotsSection } from './HiddenBotsSection'
@@ -30,8 +32,11 @@ import { HiddenBotsSection } from './HiddenBotsSection'
 /** The chat window's Settings: pages in a sidebar, ChatGPT's settings layout. */
 export type SettingsPage = 'general' | 'computers' | 'network' | 'access' | 'voice' | 'usage' | 'updates'
 
-const thisComputer = isMac ? 'This Mac' : 'This computer'
-const pages: { id: SettingsPage; title: string; label?: string; group: string; icon: string }[] = [
+/** The web client reaches computers remotely: no "This computer" pages (its network, OS access, app updates). */
+const isWeb = window.codync.runtime === 'web'
+const thisComputer = isWeb ? 'Computers' : isMac ? 'This Mac' : 'This computer'
+type PageItem = { id: SettingsPage; title: string; label?: string; group: string; icon: string }
+const allPages: PageItem[] = [
   { id: 'general', title: 'General', group: 'Personal', icon: 'gearshape' },
   { id: 'computers', title: 'Computers & devices', label: 'Computers', group: thisComputer, icon: 'desktopcomputer' },
   { id: 'network', title: 'Network', group: thisComputer, icon: 'codync.network' },
@@ -40,6 +45,7 @@ const pages: { id: SettingsPage; title: string; label?: string; group: string; i
   { id: 'usage', title: 'Usage', group: 'Personal', icon: 'gauge.with.dots.needle.33percent' },
   { id: 'updates', title: 'Updates', group: thisComputer, icon: 'arrow.down.circle' },
 ]
+const pages = allPages.filter((p) => !isWeb || !['network', 'access', 'updates'].includes(p.id))
 
 /** Each page as `screen_viewed` names it; Computer access and Voice chat report themselves. */
 const pageScreens: Record<SettingsPage, Screen | null> = { general: 'settings', updates: 'settings', computers: 'computers', network: 'settings', usage: 'usage', access: null, voice: null }
@@ -49,7 +55,7 @@ export function SettingsView({ page, setPage }: { page: SettingsPage; setPage: (
   const app = useApp()
   const dismiss = useDismiss()
   const tr = useTr()
-  const current = pages.find((p) => p.id === page)!
+  const current = pages.find((p) => p.id === page) ?? pages[0]!
   useScreenViewed(pageScreens[page])
   return (
     <div className="settings">
@@ -97,17 +103,18 @@ function PageContent({ page }: { page: SettingsPage }) {
     case 'general':
       return <GeneralSettings />
     case 'computers':
-      return <ComputersView />
+      return isWeb ? <WebComputersView /> : <ComputersView />
     case 'network':
       return <NetworkView />
     case 'voice':
-      return app.local ? (
-        <StoreContext.Provider value={app.local}>
+      // The web client keeps voice keys on the computer it talks to (the first one online).
+      return voiceStore(app) ? (
+        <StoreContext.Provider value={voiceStore(app)!}>
           <VoiceChatSettingsView showsHeader={false} />
         </StoreContext.Provider>
       ) : (
         <CardForm>
-          <Text tone="secondary">{tr(isMac ? "Voice keys are kept by This Mac's host, which isn't running." : `Voice keys are kept by ${thisMac}'s host, which isn't running.`)}</Text>
+          <Text tone="secondary">{tr(isWeb ? 'Voice keys are kept by your computer. Connect one to set them up.' : isMac ? "Voice keys are kept by This Mac's host, which isn't running." : `Voice keys are kept by ${thisMac}'s host, which isn't running.`)}</Text>
         </CardForm>
       )
     case 'usage':
@@ -119,6 +126,13 @@ function PageContent({ page }: { page: SettingsPage }) {
     case 'updates':
       return <UpdateSettings />
   }
+}
+
+/** Where voice keys are kept: this computer's host, or in the web client the first computer online. */
+function voiceStore(app: ReturnType<typeof useApp>) {
+  if (app.local) return app.local
+  if (!isWeb) return null
+  return app.computers.flatMap((c) => app.store(c.id) ?? []).find((s) => s.connection.kind === 'online') ?? null
 }
 
 /** Account, window and app preferences. */
@@ -158,6 +172,10 @@ function GeneralSettings() {
           {account.isSignedIn ? (
             <Button kind="secondary" onClick={() => void account.signOut()} disabled={account.isBusy}>
               {account.isBusy ? 'Please wait…' : 'Sign out'}
+            </Button>
+          ) : account.signsInByEmail ? (
+            <Button kind="secondary" onClick={() => account.openEmailSignIn()} disabled={account.isBusy || !account.isConfigured}>
+              Sign in with email
             </Button>
           ) : (
             <>
@@ -209,7 +227,7 @@ function GeneralSettings() {
           Show thinking details
         </Switch>
       </CardSection>
-      <CardSection title="System">
+      {isWeb ? <BrowserSettings /> : <CardSection title="System">
         {window.codync.platform === 'darwin' ? <Switch on={showInDock} onChange={(on) => void window.codync.app.setShowInDock(on).then(setShowInDock)}>Show in Dock</Switch> : null}
         {window.codync.island.supported ? (
           <Switch on={island} onChange={(on) => void window.codync.island.setEnabled(on).then(setIsland)}>
@@ -225,8 +243,9 @@ function GeneralSettings() {
         <Switch on={launchAtLogin} onChange={(on) => void window.codync.app.setLaunchAtLogin(on).then(setLaunchAtLogin)}>
           Open at login
         </Switch>
-      </CardSection>
-      <PrivacySettings />
+      </CardSection>}
+      {/* Only a computer itself may change its analytics; the web client has none of its own. */}
+      {isWeb ? null : <PrivacySettings />}
       <HiddenBotsSection />
     </CardForm>
   )

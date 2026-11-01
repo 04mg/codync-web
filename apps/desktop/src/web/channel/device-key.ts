@@ -7,7 +7,6 @@ import type { DeviceSigner } from './crypto.ts'
 
 const DB = 'codync-web'
 const STORE = 'keys'
-const DEVICE_KEY = 'device-key'
 
 export class CryptoUnavailable extends Error {}
 
@@ -49,20 +48,26 @@ function run<T>(db: IDBDatabase, mode: IDBTransactionMode, op: (s: IDBObjectStor
   })
 }
 
-let loaded: Promise<DeviceSigner> | null = null
+const loaded = new Map<string, Promise<DeviceSigner>>()
 
-/** This browser's device key, made on first use. */
-export function deviceKey(): Promise<DeviceSigner> {
-  loaded ??= (async () => {
+/**
+ * This browser's device key for an account context (§3.2: `local` for computers paired with a
+ * link, one per signed-in account otherwise, so accounts can't be linked through it), made on first use.
+ */
+export function deviceKey(context = 'local'): Promise<DeviceSigner> {
+  const name = `device-key:${context}`
+  const cached = loaded.get(name)
+  if (cached) return cached
+  const loading = (async () => {
     if (!window.isSecureContext) {
       throw new CryptoUnavailable('Open Codync over https (or on localhost): browsers only allow its encryption on a secure page.')
     }
     const db = await open()
     try {
-      let pair = await run<CryptoKeyPair | undefined>(db, 'readonly', (s) => s.get(DEVICE_KEY))
+      let pair = await run<CryptoKeyPair | undefined>(db, 'readonly', (s) => s.get(name))
       if (!pair?.privateKey || pair.privateKey.extractable) {
         pair = await generateDeviceKey()
-        await run(db, 'readwrite', (s) => s.put(pair, DEVICE_KEY))
+        await run(db, 'readwrite', (s) => s.put(pair, name))
       }
       // Keep the key when the browser is short of space (best effort; it may still ask).
       void navigator.storage?.persist?.().catch(() => false)
@@ -71,18 +76,22 @@ export function deviceKey(): Promise<DeviceSigner> {
       db.close()
     }
   })()
-  loaded.catch(() => {
-    loaded = null
-  })
-  return loaded
+  loaded.set(name, loading)
+  loading.catch(() => loaded.delete(name))
+  return loading
 }
 
-/** Forgets the device key ("Reset all data"): every computer has to be paired again. */
-export async function deleteDeviceKey() {
-  loaded = null
+/** Forgets every device key ("Reset all data", signing out): their computers have to authorize this browser again. */
+export async function deleteDeviceKeys(context?: string) {
   const db = await open()
   try {
-    await run(db, 'readwrite', (s) => s.delete(DEVICE_KEY))
+    if (context) {
+      loaded.delete(`device-key:${context}`)
+      await run(db, 'readwrite', (s) => s.delete(`device-key:${context}`))
+    } else {
+      loaded.clear()
+      await run(db, 'readwrite', (s) => s.clear())
+    }
   } finally {
     db.close()
   }

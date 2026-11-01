@@ -24,6 +24,8 @@ const updates: UpdateState = {
 
 const bridge: CodyncBridge = {
   platform: 'darwin',
+  // The demo plays the desktop app, with its own computer's host.
+  runtime: 'desktop',
   appName: 'Codync',
   appScheme: 'codync',
   hostPort: 19222,

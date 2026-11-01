@@ -32,6 +32,8 @@ if (page === 'island') {
   // The pairing window only needs this computer's host, not a mirror of its bots.
   const app = new AppModel(page !== 'pairing')
   void app.start()
+  // The web client's computers, over the end-to-end encrypted channel (absent in the desktop app).
+  window.codync.remote?.start(app)
   if (page !== 'pairing') void account.start()
   root.render(<AppContext.Provider value={app}>{page === 'pairing' ? <PairingWindow /> : <ChatWindow />}</AppContext.Provider>)
 }

@@ -68,7 +68,8 @@ const MAX_MESSAGE = 16 * 1024 * 1024
 
 export interface ChannelOptions {
   computer: ChannelComputer
-  device: DeviceSigner
+  /** The device key, or its loading (IndexedDB); a failure to load stops the channel with its message. */
+  device: DeviceSigner | Promise<DeviceSigner>
   env: SocketEnvironment
   /** Pairing mode (§4.1): the only request is `pair`; the host then closes with 4100. */
   pairingCode?: string | null
@@ -82,7 +83,8 @@ export class ChannelTransport {
   /** Gave up for good (revoked, identity changed, needs an update): only a new transport recovers. */
   stopped = false
 
-  private readonly device: DeviceSigner
+  private readonly loadingDevice: Promise<DeviceSigner>
+  private device!: DeviceSigner
   private readonly env: SocketEnvironment
   private readonly pairingCode: string | null
   private readonly allowLocalCloud: boolean
@@ -102,7 +104,7 @@ export class ChannelTransport {
 
   constructor(o: ChannelOptions) {
     this.computer = o.computer
-    this.device = o.device
+    this.loadingDevice = Promise.resolve(o.device)
     this.env = o.env
     this.pairingCode = o.pairingCode ?? null
     this.allowLocalCloud = o.allowLocalCloud ?? false
@@ -155,6 +157,13 @@ export class ChannelTransport {
   // MARK: connection loop (§7.5, §7.6)
 
   private async run() {
+    try {
+      this.device = await this.loadingDevice
+    } catch (error) {
+      this.stopped = true
+      this.setState({ kind: 'failed', message: error instanceof Error ? error.message : String(error) })
+      return
+    }
     let attempt = 0
     while (!this.closed) {
       if (this.state.kind === 'ready') this.setState({ kind: 'connecting' })

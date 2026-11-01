@@ -42,7 +42,27 @@ export class AccountSession extends Observable {
     this.changed()
   }
 
+  /** Signs in with a code sent by email (the web client), instead of Apple or Google. */
+  get signsInByEmail() {
+    return !!window.codync.account.email
+  }
+
+  /** The email sign-in sheet is open. */
+  emailSheetOpen = false
+
+  openEmailSignIn() {
+    this.emailSheetOpen = true
+    this.changed()
+  }
+
+  closeEmailSignIn() {
+    this.emailSheetOpen = false
+    window.codync.account.email?.cancel()
+    this.changed()
+  }
+
   async signIn(provider: SignInProvider) {
+    if (this.signsInByEmail) return this.openEmailSignIn()
     this.provider = provider
     analytics.track({ event: 'sign_in_started', provider })
     const reason = await window.codync.account.signIn(provider)

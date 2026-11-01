@@ -41,6 +41,7 @@ if (devOnboarding) {
 
 const bridge: CodyncBridge = {
   platform: process.platform as CodyncBridge['platform'],
+  runtime: 'desktop',
   appName: ipcRenderer.sendSync('app:name') as string,
   appScheme: ipcRenderer.sendSync('app:scheme') as string,
   hostPort: ipcRenderer.sendSync('app:hostPort') as number,

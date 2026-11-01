@@ -73,6 +73,8 @@ type options struct {
 	trustProxy      *bool
 	noAuth          *bool
 	allowLocalCloud *bool
+	cloudURL        *string
+	clerkKey        *string
 	logLevel        *string
 }
 
@@ -112,6 +114,8 @@ func serveFlags() options {
 		trustProxy:      fs.Bool("trust-proxy", envBool("CODYNC_WEB_TRUST_PROXY"), "behind a reverse proxy: trust X-Forwarded-For/-Proto (CODYNC_WEB_TRUST_PROXY)"),
 		noAuth:          fs.Bool("no-auth", envBool("CODYNC_WEB_NO_AUTH"), "no sign-in (only for a listener nobody else can reach) (CODYNC_WEB_NO_AUTH)"),
 		allowLocalCloud: fs.Bool("allow-local-cloud", envBool("CODYNC_WEB_ALLOW_LOCAL_CLOUD"), "allow a development cloud on http://127.0.0.1 (CODYNC_WEB_ALLOW_LOCAL_CLOUD)"),
+		cloudURL:        fs.String("cloud-url", env("CODYNC_WEB_CLOUD_URL", "https://api.codync.dev"), "the Codync cloud for account sign-in; empty turns accounts off (pairing links still work) (CODYNC_WEB_CLOUD_URL)"),
+		clerkKey:        fs.String("clerk-key", env("CODYNC_WEB_CLERK_KEY", "pk_live_Y2xlcmsuY29keW5jLmRldiQ"), "that cloud's account provider (Clerk) publishable key (CODYNC_WEB_CLERK_KEY)"),
 		logLevel:        fs.String("log-level", env("CODYNC_WEB_LOG_LEVEL", "info"), "debug, info, warn or error (CODYNC_WEB_LOG_LEVEL)"),
 	}
 }
@@ -146,6 +150,13 @@ func serve(args []string) error {
 		TLS:        useTLS,
 		Targets:    server.TargetPolicy{AllowPlainLoopbackCloud: *o.allowLocalCloud},
 		Version:    version,
+		CloudURL:   strings.TrimRight(*o.cloudURL, "/"),
+	}
+	if cfg.CloudURL != "" {
+		if _, err := cfg.Targets.CloudAPITarget(cfg.CloudURL + "/v1/"); err != nil {
+			return fmt.Errorf("--cloud-url %q: must be https", *o.cloudURL)
+		}
+		cfg.ClerkPublishableKey = *o.clerkKey
 	}
 	srv := server.New(cfg, nil, ui.FS(), log)
 	if *o.noAuth {

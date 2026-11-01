@@ -60,7 +60,9 @@ export function CustomIconEditor({ target }: { target: string }) {
       <Text size="caption" tone="secondary">Saved immediately. Custom images stay still.</Text>
     </VStack>
     <Dialog open={needsSignIn} title="Sign in required" message="Sign in to use custom images."
-      onClose={() => setNeedsSignIn(false)} actions={[
+      onClose={() => setNeedsSignIn(false)} actions={account.signsInByEmail ? [
+        { title: 'Sign in with email', action: () => { setNeedsSignIn(false); account.openEmailSignIn() } },
+      ] : [
         { title: 'Continue with Apple', action: () => { setNeedsSignIn(false); void account.signIn('apple') } },
         { title: 'Continue with Google', action: () => { setNeedsSignIn(false); void account.signIn('google') } },
       ]} />
