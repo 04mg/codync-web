@@ -20,7 +20,7 @@ Web client for [Codync](https://github.com/leepokai/Codync).
 <div align="center">
 
 <table>
-<tr><th align="left" width="560">Feature</th><th width="260">Web</th></tr>
+<tr><th width="560">Feature</th><th width="260">Web</th></tr>
 <tr><td>Bots, group chats, streaming replies</td><td align="center">✅</td></tr>
 <tr><td>Permission approvals</td><td align="center">✅</td></tr>
 <tr><td>Multiple computers</td><td align="center">✅</td></tr>
