@@ -67,7 +67,9 @@ func (s *Server) Secure(r *http.Request) bool {
 // Handler is the whole site.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version}) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version})
+	})
 	mux.HandleFunc("GET /auth/session", s.handleSession)
 	mux.Handle("POST /auth/login", s.sameOrigin(http.HandlerFunc(s.handleLogin)))
 	mux.Handle("POST /auth/logout", s.sameOrigin(http.HandlerFunc(s.handleLogout)))

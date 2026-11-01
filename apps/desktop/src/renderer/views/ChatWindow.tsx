@@ -68,8 +68,12 @@ export function ChatWindow() {
   const ssh = useSSH()
   // The web client has no host of its own to wait for: its window is the chat from the start.
   const showsChat = window.codync.runtime === 'web' || shouldShowChat(app.host.state.kind, app.computers.length, ssh.state)
+  // A `#pair=` link opened or pasted into the address bar starts pairing.
   useEffect(() => {
-    if (window.codync.remote) takePairingLinkFromAddress()
+    if (!window.codync.remote) return
+    takePairingLinkFromAddress()
+    window.addEventListener('hashchange', takePairingLinkFromAddress)
+    return () => window.removeEventListener('hashchange', takePairingLinkFromAddress)
   }, [])
   const finishAccess = (ready: boolean, onboarding: boolean) => {
     setAccessSetup(ready ? 'ready' : 'later')

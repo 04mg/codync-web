@@ -89,6 +89,7 @@ const map: Record<string, IconNode> = {
   'doc.zipper': L.FileArchive,
   ellipsis: L.Ellipsis,
   'ellipsis.circle': L.CircleEllipsis,
+  envelope: L.Mail,
   exclamationmark: L.TriangleAlert,
   'exclamationmark.circle': L.CircleAlert,
   'exclamationmark.circle.fill': L.CircleAlert,

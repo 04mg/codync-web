@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -91,6 +92,12 @@ func envBool(name string) bool {
 }
 
 func defaultDataDir() string {
+	// macOS: ~/Library/Application Support; Windows: %AppData%.
+	if runtime.GOOS != "linux" {
+		if d, err := os.UserConfigDir(); err == nil {
+			return filepath.Join(d, "codync-web")
+		}
+	}
 	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
 		return filepath.Join(d, "codync-web")
 	}
