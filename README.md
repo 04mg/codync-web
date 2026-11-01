@@ -17,22 +17,23 @@ Web client for [Codync](https://github.com/leepokai/Codync).
 
 ## Feature parity
 
-| Feature | Web |
-| --- | :---: |
-| Bots, group chats, streaming replies | ✅ |
-| Permission approvals | ✅ |
-| Multiple computers | ✅ |
-| Direct and relay connections | ✅ |
-| Pairing with `codync-host pair` | ✅ |
-| Offline messages | ✅ |
-| Files and artifacts | ✅ |
-| Extensions and routines | ✅ |
-| Usage and voice calls | ✅ |
-| Account sign-in | ✅ Email code |
-| Apple and Google sign-in | ❌ |
-| Managing the computer's own host | ❌ |
-| SSH computers | ❌ |
-| Bot import | ❌ |
-| On-device speech, menu bar, notch island | ❌ |
-| Notifications with the tab closed | ❌ |
-| QR scanning | ❌ Paste the link |
+<table>
+<tr><th align="left" width="560">Feature</th><th width="260">Web</th></tr>
+<tr><td>Bots, group chats, streaming replies</td><td align="center">✅</td></tr>
+<tr><td>Permission approvals</td><td align="center">✅</td></tr>
+<tr><td>Multiple computers</td><td align="center">✅</td></tr>
+<tr><td>Direct and relay connections</td><td align="center">✅</td></tr>
+<tr><td>Pairing with <code>codync-host pair</code></td><td align="center">✅</td></tr>
+<tr><td>Offline messages</td><td align="center">✅</td></tr>
+<tr><td>Files and artifacts</td><td align="center">✅</td></tr>
+<tr><td>Extensions and routines</td><td align="center">✅</td></tr>
+<tr><td>Usage and voice calls</td><td align="center">✅</td></tr>
+<tr><td>Account sign-in</td><td align="center">✅ Email code</td></tr>
+<tr><td>Apple and Google sign-in</td><td align="center">❌</td></tr>
+<tr><td>Managing the computer's own host</td><td align="center">❌</td></tr>
+<tr><td>Connecting through an SSH tunnel</td><td align="center">❌ Pair the computer instead (direct or relay)</td></tr>
+<tr><td>Bot import</td><td align="center">❌</td></tr>
+<tr><td>On-device speech, menu bar, notch island</td><td align="center">❌</td></tr>
+<tr><td>Notifications with the tab closed</td><td align="center">❌</td></tr>
+<tr><td>QR scanning</td><td align="center">❌ Paste the link</td></tr>
+</table>
