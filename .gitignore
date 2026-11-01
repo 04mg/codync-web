@@ -31,3 +31,8 @@ __pycache__/
 .env
 .env.*
 !.env.*.example
+
+# codync-web: the built app is embedded at build time (make -C apps/web)
+apps/web/internal/ui/dist/*
+!apps/web/internal/ui/dist/.keep
+apps/web/bin/
