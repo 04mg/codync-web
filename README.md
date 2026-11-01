@@ -17,6 +17,8 @@ Web client for [Codync](https://github.com/leepokai/Codync).
 
 ## Feature parity
 
+<div align="center">
+
 <table>
 <tr><th align="left" width="560">Feature</th><th width="260">Web</th></tr>
 <tr><td>Bots, group chats, streaming replies</td><td align="center">✅</td></tr>
@@ -37,3 +39,5 @@ Web client for [Codync](https://github.com/leepokai/Codync).
 <tr><td>Notifications with the tab closed</td><td align="center">❌</td></tr>
 <tr><td>QR scanning</td><td align="center">❌ Paste the link</td></tr>
 </table>
+
+</div>
