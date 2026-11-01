@@ -170,6 +170,9 @@ func serve(args []string) error {
 			}
 		}
 	}
+	if cfg.Device, err = server.NewDeviceStore(*o.dataDir); err != nil {
+		return fmt.Errorf("--data-dir: %w", err)
+	}
 	srv := server.New(cfg, nil, ui.FS(), log)
 	if *o.noAuth {
 		if !isLoopback(host) {

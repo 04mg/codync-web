@@ -30,6 +30,8 @@ type Config struct {
 	ClerkPublishableKey string
 	// Account keeps the account sign-in on the server; nil when sign-in is off.
 	Account *AccountSession
+	// Device is this server's Codync device: its keys and paired computers, shared by every browser.
+	Device *DeviceStore
 }
 
 // Server serves the UI, the sign-in gate and the bridges.
@@ -77,6 +79,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /auth/logout", s.sameOrigin(http.HandlerFunc(s.handleLogout)))
 	mux.Handle("GET /bridge/ws", s.signedIn(http.HandlerFunc(s.handleBridgeWS)))
 	mux.Handle("POST /bridge/http", s.sameOrigin(s.signedIn(http.HandlerFunc(s.handleBridgeHTTP))))
+	if s.cfg.Device != nil {
+		s.deviceRoutes(mux)
+	}
 	mux.HandleFunc("GET /artifact/", handleArtifactFallback)
 	mux.HandleFunc("GET /", s.handleUI)
 	return s.headers(mux)

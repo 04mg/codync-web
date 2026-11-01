@@ -7,8 +7,8 @@
 //
 // It pairs a fresh device key each run (shown on the computer as "codync-web e2e").
 
-import { generateDeviceKey, webCryptoSigner } from '../device-key.ts'
-import { b64url } from '../crypto.ts'
+import { ed25519 } from '@noble/curves/ed25519.js'
+import { b64url, type DeviceSigner } from '../crypto.ts'
 import { pair } from '../pair.ts'
 import { parsePairing, type ChannelComputer } from '../pairing.ts'
 import type { SocketEnvironment } from '../socket.ts'
@@ -60,7 +60,7 @@ function waitState(t: ChannelTransport, ok: (s: LinkState) => boolean, ms = 20_0
   })
 }
 
-async function exercise(label: string, computer: ChannelComputer, device: Awaited<ReturnType<typeof webCryptoSigner>>, env: SocketEnvironment) {
+async function exercise(label: string, computer: ChannelComputer, device: DeviceSigner, env: SocketEnvironment) {
   console.log(`\n▶ ${label}`)
   const t = new ChannelTransport({ computer, device, env }).start()
   const s = await waitState(t, (s) => s.kind === 'ready' || s.kind === 'unauthorized' || (s.kind === 'failed' && t.stopped))
@@ -94,7 +94,8 @@ async function exercise(label: string, computer: ChannelComputer, device: Awaite
 
 const cookie = await signIn()
 const env = environment(cookie)
-const device = await webCryptoSigner(await generateDeviceKey())
+const secret = ed25519.utils.randomSecretKey()
+const device: DeviceSigner = { publicKey: ed25519.getPublicKey(secret), sign: async (m) => ed25519.sign(m, secret) }
 console.log(`device key ${b64url(device.publicKey)}`)
 
 const p = parsePairing(link)

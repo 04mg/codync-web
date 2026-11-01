@@ -9,7 +9,7 @@ import { AccessAsks } from './account-access'
 import { WebAccount } from './account'
 import { getAppearance, installAppearance, setAppearance } from './appearance'
 import { artifacts } from './artifacts'
-import { deleteDeviceKeys } from './channel/device-key'
+import { resetDevice } from './channel/device-key'
 import { notifications } from './attention'
 import { deviceName, webConfig } from './environment'
 import { files, pickFiles, readClipboardFiles } from './files'
@@ -26,7 +26,7 @@ const updates: UpdateState = {
 }
 
 /** Builds the bridge; `loadWebConfig()` must have finished. */
-export function installBridge() {
+export async function installBridge() {
   installAppearance()
   installShortcuts()
   const account = new WebAccount()
@@ -34,6 +34,7 @@ export function installBridge() {
   remote.access = new AccessAsks(account, (c, context) => remote.addApproved({ ...c, boxKey: null, urls: [] }, context), () => remote.notify())
   // Signing out of an account takes its computers off this browser too (they authorized that account's key).
   account.onSignedOut = (context) => remote.forgetContext(context)
+  await remote.load()
 
   const bridge: CodyncBridge = {
     // The renderer's platform choices (Lucide icons, voice engines, copy) are Linux's: no SF Symbols,
@@ -128,7 +129,7 @@ export function installBridge() {
       setTraySummary() {},
       onCommand,
       resetAllData: async () => {
-        await deleteDeviceKeys().catch(() => {})
+        await resetDevice().catch(() => {})
         for (const name of await caches.keys().catch(() => [])) await caches.delete(name).catch(() => false)
         for (const reg of await navigator.serviceWorker?.getRegistrations().catch(() => []) ?? []) await reg.unregister().catch(() => false)
         try {

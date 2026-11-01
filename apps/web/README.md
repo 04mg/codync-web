@@ -65,11 +65,12 @@ Caddy in front: `codync.example.com { reverse_proxy 127.0.0.1:8080 }`.
 
 ## Security
 
-- **End-to-end encryption ends in the browser.** The device key is a non-extractable WebCrypto Ed25519 key in the browser's IndexedDB; the handshake (signed ephemeral X25519 → HKDF → ChaCha20-Poly1305) runs in the page. The server only forwards ciphertext: browsers can't set the relay's `Codync-Sig` header on a WebSocket or reach a host on the server's network, so the bridge opens that socket with the signature the browser computed and passes the channel's messages through unchanged.
+- **End-to-end encryption ends in the browser.** The handshake (signed ephemeral X25519 → HKDF → ChaCha20-Poly1305) and every message's encryption run in the page; the session keys never leave it. The server only forwards ciphertext: browsers can't set the relay's `Codync-Sig` header on a WebSocket or reach a host on the server's network, so the bridge opens that socket with the signature the browser asked for and passes the channel's messages through unchanged.
+- **One device per server.** The server is this Codync Web's device: its Ed25519 device keys (`device.json` in the data directory, readable only by its user) and its paired computers. Browsers ask the server to sign and never get the private keys; every browser that signs in to the server sees the same computers, and a pairing or a forgotten computer reaches open tabs within 30 seconds. Whoever runs the server can use these computers, as they could anyway by changing the app it serves.
 - The bridge reaches only the two channel endpoints of the protocol (`ws(s)://…/channel?v=1`, `wss://…/v1/relay/device/{id}?v=1`); the proxy only `https://…/v1/…`. Both need a signed-in session (HttpOnly, SameSite=Strict cookie) and same-origin requests.
 - Artifacts (bots' HTML) load through a service worker with a `Content-Security-Policy: sandbox` header: an opaque origin with no access to the app, its keys or its session. Their HTML never reaches the server.
 - The Codync account sign-in is kept on the server (`account-session` in the data directory, readable only by its user): the proxy adds it to the account provider's requests and never hands it to a browser, so every browser of this server is signed in to the same account. Signing out anywhere signs out everywhere.
-- Each browser is still its own device, with its own key: listed on the computer (`Codync Web · Chrome on macOS`), approved there once, and revocable there (`codync-host devices revoke`).
+- A computer lists the server as one device (`Codync Web · codync.example.com`), approved there once and revocable there (`codync-host devices revoke`). "Reset all data" forgets the device for every browser.
 
 ## Build
 

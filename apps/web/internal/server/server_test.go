@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -388,5 +389,77 @@ func TestFrontendHost(t *testing.T) {
 	}
 	if _, err := frontendHost("pk_live_" + base64.RawStdEncoding.EncodeToString([]byte("evil.example/path$"))); err == nil {
 		t.Error("accepted a key with a path")
+	}
+}
+
+func TestDeviceSharedByBrowsers(t *testing.T) {
+	ts, s := testServer(t, "secret-secret")
+	_, cookie := login(t, ts, "secret-secret")
+	dir := t.TempDir()
+	device, err := NewDeviceStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Device = device
+	ts.Config.Handler = s.Handler()
+	do := func(method, path, origin string, body []byte) (int, []byte) {
+		req, _ := http.NewRequest(method, ts.URL+path, bytes.NewReader(body))
+		req.Header.Set("Cookie", cookie)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		out, _ := io.ReadAll(res.Body)
+		return res.StatusCode, out
+	}
+	status, raw := do("GET", "/device/keys/local", "", nil)
+	var key struct{ PublicKey string }
+	_ = json.Unmarshal(raw, &key)
+	pub, _ := base64.RawURLEncoding.DecodeString(key.PublicKey)
+	if status != 200 || len(pub) != ed25519.PublicKeySize {
+		t.Fatalf("key: %d %s", status, raw)
+	}
+	status, sig := do("POST", "/device/keys/local/sign", ts.URL, []byte("handshake"))
+	if status != 200 || !ed25519.Verify(pub, []byte("handshake"), sig) {
+		t.Errorf("signature: %d", status)
+	}
+	if status, _ := do("POST", "/device/keys/local/sign", "https://evil.example", []byte("x")); status != http.StatusForbidden {
+		t.Errorf("cross-origin signing: %d", status)
+	}
+	if status, _ := do("GET", "/device/keys/..%2Fx", "", nil); status != http.StatusBadRequest {
+		t.Errorf("bad context: %d", status)
+	}
+	if status, _ := do("PUT", "/device/computers/zc_1", ts.URL, []byte(`{"computer":{"id":"zc_1"}}`)); status != http.StatusNoContent {
+		t.Errorf("put: %d", status)
+	}
+	if status, _ := do("PUT", "/device/computers/zc_2", ts.URL, []byte(`not json`)); status != http.StatusBadRequest {
+		t.Errorf("bad computer: %d", status)
+	}
+	// Another browser, after a restart: the same key and computers.
+	again, err := NewDeviceStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Device = again
+	if _, raw := do("GET", "/device/keys/local", "", nil); !strings.Contains(string(raw), key.PublicKey) {
+		t.Errorf("key changed after a restart: %s", raw)
+	}
+	if _, raw := do("GET", "/device/computers", "", nil); string(raw) != "[{\"computer\":{\"id\":\"zc_1\"}}]\n" {
+		t.Errorf("computers: %s", raw)
+	}
+	do("DELETE", "/device/computers/zc_1", ts.URL, nil)
+	if _, raw := do("GET", "/device/computers", "", nil); string(raw) != "[]\n" {
+		t.Errorf("after delete: %s", raw)
+	}
+	do("POST", "/device/reset", ts.URL, nil)
+	if _, raw := do("GET", "/device/keys/local", "", nil); strings.Contains(string(raw), key.PublicKey) {
+		t.Errorf("reset kept the key")
+	}
+	if info, _ := os.Stat(filepath.Join(dir, "device.json")); info.Mode().Perm() != 0o600 {
+		t.Errorf("device.json mode %v", info.Mode().Perm())
 	}
 }

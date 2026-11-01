@@ -75,12 +75,9 @@ export function socketEnvironment(): SocketEnvironment {
   return environment
 }
 
-/** This browser as a computer lists its devices: "Codync Web · Chrome on macOS". */
+/** This server as a computer lists its devices (every browser on it is that one device): "Codync Web · codync.example.com". */
 export function deviceName(): string {
-  const ua = navigator.userAgent
-  const browser = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser'
-  const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac OS X/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'a computer'
-  return `Codync Web · ${browser} on ${os}`
+  return `Codync Web · ${location.hostname}`
 }
 
 /** The browser's operating system, for the keyboard (⌘ on a Mac, Ctrl elsewhere). */

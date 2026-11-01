@@ -6,5 +6,5 @@ import { presetWebPreferences } from './preferences'
 await loadWebConfig()
 presetWebPreferences()
 const { installBridge } = await import('./bridge')
-installBridge()
+await installBridge()
 await import('../renderer/main')

@@ -1,14 +1,14 @@
 // The web client's computers: each one paired with a link (§4.1) or approved through the account
-// (§4.2 B), kept in this browser, and attached to the window's model as a `BotStore` over its own
-// end-to-end encrypted channel. Only public keys and addresses are saved here; the device keys stay
-// non-extractable in IndexedDB (channel/device-key.ts).
+// (§4.2 B), kept on the codync-web server so every browser on it has the same ones (like the device
+// keys, channel/device-key.ts), and attached to the window's model as a `BotStore` over its own
+// end-to-end encrypted channel. Only public keys and addresses are saved.
 
 import type { AccessAsk, RemoteComputer, RemoteComputersBridge } from '@shared/ipc'
 import type { Computer } from '@shared/models'
 import type { AppModel } from '../renderer/store/app-model'
 import { BotStore } from '../renderer/store/bot-store'
 import { ChannelHostTransport, hostError } from './channel-host-transport'
-import { deviceKey } from './channel/device-key'
+import { deviceKey, deviceRequest } from './channel/device-key'
 import { pair } from './channel/pair'
 import { type ChannelComputer, parsePairing } from './channel/pairing'
 import { ChannelTransport } from './channel/transport'
@@ -16,7 +16,8 @@ import type { AccessAsks } from './account-access'
 import { watchAttention } from './attention'
 import { deviceName, webConfig, socketEnvironment } from './environment'
 
-const STORAGE = 'codync-web-computers-v1'
+/** How often an open, visible tab picks up computers another browser paired or forgot. */
+const SYNC_MS = 30_000
 
 export interface SavedComputer {
   computer: ChannelComputer
@@ -26,34 +27,64 @@ export interface SavedComputer {
   context: string
 }
 
-function load(): SavedComputer[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE) ?? '[]') as SavedComputer[]
-    return Array.isArray(raw) ? raw.filter((s) => s?.computer?.id && s.computer.signKey) : []
-  } catch {
-    return []
-  }
+async function fetchSaved(): Promise<SavedComputer[]> {
+  const raw = (await (await deviceRequest('computers')).json()) as SavedComputer[]
+  return Array.isArray(raw) ? raw.filter((s) => s?.computer?.id && s.computer.signKey).sort((a, b) => a.pairedAt - b.pairedAt) : []
 }
 
 export class RemoteComputers implements RemoteComputersBridge {
-  private saved = load()
+  private saved: SavedComputer[] = []
+  /** Writes still on their way to the server: a sync waits for them. */
+  private writing = 0
   private readonly channels = new Map<string, { channel: ChannelTransport; off: () => void }>()
   private app: AppModel | null = null
   private readonly listeners = new Set<() => void>()
   /** Account access requests (account-access.ts); set once the account side starts. */
   access: AccessAsks | null = null
 
+  /** The server's computers, before the app starts (it shows them from its first frame). */
+  async load() {
+    try {
+      this.saved = await fetchSaved()
+    } catch (error) {
+      console.warn("Couldn't load the computers", error)
+    }
+  }
+
   start(app: AppModel) {
     if (this.app) return
     this.app = app
     for (const s of this.saved) this.attach(s)
     watchAttention(app)
-    // A tab coming back or the network returning: reconnect at once instead of waiting out a backoff.
+    // A tab coming back or the network returning: reconnect at once instead of waiting out a backoff,
+    // and pick up what other browsers changed.
     const wake = () => {
       for (const { channel } of this.channels.values()) if (channel.state.kind !== 'ready') channel.reconnect()
+      void this.sync()
     }
     window.addEventListener('online', wake)
     document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && wake())
+    setInterval(() => document.visibilityState === 'visible' && void this.sync(), SYNC_MS)
+  }
+
+  /** Takes on the server's list: attaches computers paired elsewhere, drops ones forgotten elsewhere. */
+  async sync() {
+    if (this.writing) return
+    let fresh: SavedComputer[]
+    try {
+      fresh = await fetchSaved()
+    } catch {
+      return
+    }
+    if (this.writing) return
+    const before = new Set(this.saved.map((s) => s.computer.id))
+    const after = new Set(fresh.map((s) => s.computer.id))
+    const added = fresh.filter((s) => !before.has(s.computer.id))
+    const removed = [...before].filter((id) => !after.has(id))
+    this.saved = fresh
+    for (const id of removed) this.detach(id)
+    for (const s of added) this.attach(s)
+    if (added.length || removed.length) this.notify()
   }
 
   list(): RemoteComputer[] {
@@ -90,7 +121,7 @@ export class RemoteComputers implements RemoteComputersBridge {
 
   private add(s: SavedComputer) {
     this.saved = [...this.saved.filter((x) => x.computer.id !== s.computer.id), s]
-    this.persist()
+    void this.save(s)
     this.attach(s)
     this.notify()
   }
@@ -98,8 +129,8 @@ export class RemoteComputers implements RemoteComputersBridge {
   async forget(computerId: string) {
     this.detach(computerId)
     this.saved = this.saved.filter((s) => s.computer.id !== computerId)
-    this.persist()
     this.notify()
+    await this.write(`computers/${encodeURIComponent(computerId)}`, { method: 'DELETE' })
   }
 
   /** Every computer from one account context (signing out of that account). */
@@ -124,11 +155,22 @@ export class RemoteComputers implements RemoteComputersBridge {
     return this.saved.some((s) => s.computer.id === computerId)
   }
 
-  private persist() {
+  private save(s: SavedComputer) {
+    return this.write(`computers/${encodeURIComponent(s.computer.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(s),
+    })
+  }
+
+  private async write(path: string, init: RequestInit) {
+    this.writing++
     try {
-      localStorage.setItem(STORAGE, JSON.stringify(this.saved))
+      await deviceRequest(path, init)
     } catch (error) {
       console.warn("Couldn't save the computers", error)
+    } finally {
+      this.writing--
     }
   }
 
@@ -152,7 +194,8 @@ export class RemoteComputers implements RemoteComputersBridge {
     const offs = [
       channel.onComputer((c) => {
         this.saved = this.saved.map((x) => (x.computer.id === c.id ? { ...x, computer: { ...c, color: x.computer.color ?? null } } : x))
-        this.persist()
+        const updated = this.saved.find((x) => x.computer.id === c.id)
+        if (updated) void this.save(updated)
         store.updateComputer((old) => ({ ...old, name: c.name, boxKey: c.boxKey, urls: c.urls, cloud: c.cloud, device: c.device ?? old.device }))
         this.notify()
       }),
