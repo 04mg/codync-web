@@ -4,7 +4,7 @@
 
 # Codync Web
 
-The [Codync](https://github.com/leepokai/Codync) app in your browser. One self-hosted binary serves the full Codync desktop interface and connects to any `codync-host` over Codync's end-to-end encrypted channel, directly or through the Codync relay. Run it on the same server as your agents and chat with your bots from any browser.
+Web client for [Codync](https://github.com/leepokai/Codync).
 
 [![Linux x86_64](https://img.shields.io/badge/Linux-x86__64-111111?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/04mg/codync-web/releases/latest/download/codync-web-linux-amd64.tar.gz)
 [![Linux arm64](https://img.shields.io/badge/Linux-arm64-111111?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/04mg/codync-web/releases/latest/download/codync-web-linux-arm64.tar.gz)
@@ -17,33 +17,22 @@ The [Codync](https://github.com/leepokai/Codync) app in your browser. One self-h
 
 ## Feature parity
 
-Codync Web is the desktop app's own interface (`apps/desktop/src/renderer`) with a browser bridge in place of Electron. Setup, flags and security model: [apps/web/README.md](apps/web/README.md).
+**Works**
 
-**Works in the browser**
+- Bots, group chats, streaming replies, permissions
+- Multiple computers, direct or through the relay
+- Pairing with `codync-host pair`
+- Offline messages (relay mailbox)
+- Account sign-in with an email code
+- Files, artifacts, extensions, routines, usage, voice calls
+- Settings, themes, notifications
 
-| Area | |
-| --- | --- |
-| Chat | Bots and group chats, streaming replies, thinking and tool steps, permission cards (allow once, always, deny), queued messages, replies, reactions, history, search, drafts per bot |
-| Bots | New bot, profile editor (agent, model, workspace, permissions, connectors, skills), sections, pin, hide, lead bot, delete |
-| Computers | Several computers at once, grouped in the sidebar, each over its own encrypted channel; direct route when reachable, else the Codync relay or a private relay |
-| Pairing | `codync-host pair` link (or the desktop app's *Copy pairing link*), pasted or opened as `…/#pair=<link>` |
-| Offline | Messages to an offline computer wait in the relay's encrypted mailbox and arrive when it's back |
-| Access | Revocation on the computer takes effect at once; the browser is listed there as its own device |
-| Account | Sign-in with an emailed code, the account's computers, *Ask for access* with the 6-digit code check |
-| Files | Attach and upload files, download what bots share |
-| Artifacts | Bots' HTML documents in a sandboxed origin, open in a new tab |
-| Extensions | Marketplace, skills, connectors, agent setup terminal, routines |
-| Other | Usage limits, voice calls with your OpenAI or Gemini key, host version and *Update* button, light/dark theme, text size, languages, tab badge and browser notifications, keyboard shortcuts |
+**Missing**
 
-**Not in the browser**
-
-| Missing | Why / instead |
-| --- | --- |
-| Sign in with Apple or Google, creating an account | Their redirect returns to the native apps only; sign in with an emailed code to an existing account |
-| Managing a computer's own host: install, pairing other devices, authorized devices, adding it to the account, relay settings, approving access requests, Network, computer access, remote screen agent | The host only allows these from the computer itself (loopback); use the desktop app or `codync-host` there |
-| SSH computers | Pair the computer with a link instead |
-| Importing bots from an export file | Run `codync-host import` on the computer |
-| On-device speech, voice input shortcut, notch island, menu bar, open at login, in-app updates | Desktop-only; calls use cloud voice on your key, updates come as new releases |
-| Push notifications with the tab closed | Notifications show while the tab is open |
-| Scanning a QR code | Paste the pairing link |
-| Connector sign-in callback | After signing in, paste the final page's address back into Codync |
+- Apple and Google sign-in
+- Managing a computer's own host (use the desktop app or `codync-host`)
+- SSH computers
+- Bot import
+- On-device speech, menu bar, notch island
+- Notifications with the tab closed
+- QR scanning
