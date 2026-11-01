@@ -43,6 +43,8 @@ function EmailSignInForm() {
   }
   const send = () => void run(async () => {
     await bridge.start(email)
+    // Already signed in (the session was there all along): nothing to verify.
+    if (account.isSignedIn) return account.closeEmailSignIn()
     setStep('code')
   })
   const verify = () => void run(async () => {

@@ -28,6 +28,8 @@ type Config struct {
 	CloudURL string
 	// ClerkPublishableKey is the account provider's public key for that cloud.
 	ClerkPublishableKey string
+	// Account keeps the account sign-in on the server; nil when sign-in is off.
+	Account *AccountSession
 }
 
 // Server serves the UI, the sign-in gate and the bridges.

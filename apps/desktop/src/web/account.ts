@@ -1,5 +1,7 @@
 // The Codync account in the browser, through Clerk's Frontend API the way the desktop app drives it
-// (apps/desktop/src/main/account.ts): a client token in the `Authorization` header (`_is_native`).
+// (apps/desktop/src/main/account.ts), in native mode (`_is_native`). The client token lives on the
+// codync-web server, not here: its proxy adds it to every Frontend API request and keeps the rotated
+// one, so every browser on that server shares the sign-in (apps/web/internal/server/account.go).
 // A browser on a self-hosted address can't receive the apps' sign-in redirect, so it signs in with a
 // code sent to the account's email instead. Neither the account nor the cloud ever grants access to
 // a computer by itself (spec §4.2): each computer still approves this browser.
@@ -13,8 +15,6 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { b64url, signRequest, utf8Encoder } from './channel/crypto'
 import { deviceKey } from './channel/device-key'
 import { webConfig } from './environment'
-
-const TOKEN_KEY = 'codync-web-clerk-client'
 
 interface ProxyAnswer {
   status: number
@@ -65,6 +65,7 @@ interface ClerkClient {
 interface SignIn {
   id: string
   status: string
+  created_session_id?: string | null
   supported_first_factors?: { strategy: string; email_address_id?: string }[] | null
 }
 
@@ -82,7 +83,6 @@ export class WebAccount {
   state: AccountState
   private readonly listeners = new Set<(s: AccountState) => void>()
   private readonly frontendAPI: string | null
-  private token: string | null = null
   private client: ClerkClient | null = null
   private cachedJWT: { session: string; jwt: string; until: number } | null = null
   private signIn: SignIn | null = null
@@ -93,9 +93,6 @@ export class WebAccount {
     const { cloudURL, clerkPublishableKey } = webConfig()
     this.frontendAPI = clerkPublishableKey ? frontendAPI(clerkPublishableKey) : null
     this.state = { ready: !this.frontendAPI, configured: !!this.frontendAPI && !!cloudURL, busy: false, error: null, user: null, cloudURL }
-    try {
-      this.token = localStorage.getItem(TOKEN_KEY)
-    } catch {}
     void this.restore()
   }
 
@@ -111,19 +108,16 @@ export class WebAccount {
 
   private async restore() {
     if (!this.frontendAPI) return
-    try {
-      if (this.token) await this.refreshClient()
-    } catch {
-      // Offline: the saved session still counts; the next call refreshes it.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.refreshClient()
+        break
+      } catch {
+        // Offline or the server restarting: try again shortly; the next call refreshes it anyway.
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
+      }
     }
     this.set({ ready: true })
-  }
-
-  private persist() {
-    try {
-      if (this.token) localStorage.setItem(TOKEN_KEY, this.token)
-      else localStorage.removeItem(TOKEN_KEY)
-    } catch {}
   }
 
   private async request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, form?: Record<string, string>): Promise<T> {
@@ -131,7 +125,6 @@ export class WebAccount {
     const url = new URL(`${this.frontendAPI}${path}`)
     url.searchParams.set('_is_native', 'true')
     const headers: Record<string, string> = { 'x-device-type': 'web', 'x-app-version': window.codync.appVersion }
-    if (this.token) headers.Authorization = this.token
     let body: Uint8Array | null = null
     if (form) {
       headers['Content-Type'] = 'application/x-www-form-urlencoded'
@@ -139,12 +132,6 @@ export class WebAccount {
     }
     const res = await viaProxy(method, url, headers, body)
     if (res.status === 0) throw new ClerkError(0, "Can't reach the account service. Check the connection.")
-    // The client token rotates with responses (sign-in, sign-out).
-    const auth = res.headers.authorization
-    if (auth !== undefined) {
-      this.token = !auth || auth.toLowerCase() === 'bearer' ? null : auth
-      this.persist()
-    }
     let json: { response?: T; client?: ClerkClient | null; errors?: { code?: string; long_message?: string; message?: string }[] } & T
     try {
       json = JSON.parse(new TextDecoder().decode(res.body))
@@ -152,7 +139,9 @@ export class WebAccount {
       throw new ClerkError(res.status, `Account service error ${res.status}`)
     }
     if (res.status >= 400) throw new ClerkError(res.status, json.errors?.[0]?.long_message ?? json.errors?.[0]?.message ?? `Account service error ${res.status}`, json.errors?.[0]?.code)
-    if ('client' in json) this.applyClient(json.client ?? null)
+    // `client` rides along on changes; GET /v1/client answers with the client itself and `client: null`,
+    // which is no sign-out (refreshClient applies its answer).
+    if (json.client) this.applyClient(json.client)
     return (json.response ?? json) as T
   }
 
@@ -167,8 +156,10 @@ export class WebAccount {
     if (before && before !== (user?.id ?? null)) this.onSignedOut?.(accountContext(before))
   }
 
+  /** The last active session, or else any active one: a client token with a session is signed in. */
   private get activeSession(): ClerkSession | null {
-    return this.client?.sessions?.find((s) => s.id === this.client?.last_active_session_id && s.status === 'active') ?? null
+    const active = this.client?.sessions?.filter((s) => s.status === 'active') ?? []
+    return active.find((s) => s.id === this.client?.last_active_session_id) ?? active[0] ?? null
   }
 
   private async refreshClient() {
@@ -185,6 +176,9 @@ export class WebAccount {
     start: async (email: string) => {
       this.set({ busy: true, error: null })
       try {
+        // Signed in already (a session the page didn't pick up): that session is the answer.
+        await this.refreshClient()
+        if (this.activeSession) return
         const created = await this.request<SignIn>('POST', '/v1/client/sign_ins', { identifier: email.trim() })
         const factor = created.supported_first_factors?.find((f) => f.strategy === 'email_code')
         if (!factor?.email_address_id) throw new ClerkError(0, "This account can't get a sign-in code by email.")
@@ -203,6 +197,8 @@ export class WebAccount {
         const done = await this.request<SignIn>('POST', `/v1/client/sign_ins/${attempt.id}/attempt_first_factor`, { strategy: 'email_code', code: code.replace(/\s/g, '') })
         if (done.status !== 'complete') throw new ClerkError(0, 'This account needs another step to sign in, which only the Codync app can do.')
         this.signIn = null
+        // Make the new session the client's active one, as Clerk's own clients do (setActive).
+        if (done.created_session_id) await this.request('POST', `/v1/client/sessions/${done.created_session_id}/touch`).catch(() => {})
         await this.refreshClient()
       } catch (error) {
         throw new Error(signInMessage(error))

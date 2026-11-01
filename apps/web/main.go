@@ -164,6 +164,11 @@ func serve(args []string) error {
 			return fmt.Errorf("--cloud-url %q: must be https", *o.cloudURL)
 		}
 		cfg.ClerkPublishableKey = *o.clerkKey
+		if cfg.ClerkPublishableKey != "" {
+			if cfg.Account, err = server.NewAccountSession(*o.dataDir, cfg.ClerkPublishableKey); err != nil {
+				return fmt.Errorf("--clerk-key: %w", err)
+			}
+		}
 	}
 	srv := server.New(cfg, nil, ui.FS(), log)
 	if *o.noAuth {

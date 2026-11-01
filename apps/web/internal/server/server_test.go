@@ -3,12 +3,15 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -304,7 +307,7 @@ func TestCloudProxy(t *testing.T) {
 	var answer proxyResponse
 	_ = json.NewDecoder(res.Body).Decode(&answer)
 	res.Body.Close()
-	if answer.Status != 200 || answer.Headers["authorization"] != "rotated" || answer.Headers["set-cookie"] != "" {
+	if answer.Status != 200 || answer.Headers["authorization"] != "" || answer.Headers["set-cookie"] != "" {
 		t.Errorf("answer %+v", answer)
 	}
 	if got.Get("Codync-Sig") != "v=1,x" || got.Get("Authorization") != "Bearer t" {
@@ -320,5 +323,70 @@ func TestCloudProxy(t *testing.T) {
 	res, _ = http.DefaultClient.Do(req)
 	if res.StatusCode != http.StatusBadRequest {
 		t.Errorf("non-/v1 target: %d", res.StatusCode)
+	}
+}
+
+func TestAccountSessionStaysOnServer(t *testing.T) {
+	ts, s := testServer(t, "secret-secret")
+	_, cookie := login(t, ts, "secret-secret")
+	var seen []string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/v1/client/sign_ins":
+			w.Header().Set("Authorization", "client-token-1")
+		case "/v1/client/sessions/s/remove":
+			w.Header().Set("Authorization", "")
+		}
+		_, _ = w.Write([]byte(`{"response":{}}`))
+	}))
+	defer provider.Close()
+	host := strings.TrimPrefix(provider.URL, "http://")
+	dir := t.TempDir()
+	account, err := NewAccountSession(dir, "pk_test_"+base64.RawStdEncoding.EncodeToString([]byte(host+"$")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Account = account
+	call := func(path, browserAuth string) proxyResponse {
+		payload, _ := json.Marshal(proxyRequest{Method: "POST", URL: provider.URL + path, Headers: map[string]string{"Authorization": browserAuth}})
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/bridge/http", bytes.NewReader(payload))
+		req.Header.Set("Cookie", cookie)
+		req.Header.Set("Origin", ts.URL)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var answer proxyResponse
+		_ = json.NewDecoder(res.Body).Decode(&answer)
+		return answer
+	}
+	if a := call("/v1/client/sign_ins", "forged"); a.Headers["authorization"] != "" {
+		t.Errorf("the client token reached the browser: %+v", a)
+	}
+	// Another browser (no token of its own) is signed in through the saved session.
+	call("/v1/client", "")
+	if seen[0] != "" || seen[1] != "client-token-1" {
+		t.Errorf("provider saw %q", seen)
+	}
+	if saved, _ := os.ReadFile(filepath.Join(dir, "account-session")); string(saved) != "client-token-1" {
+		t.Errorf("saved %q", saved)
+	}
+	if again, _ := NewAccountSession(dir, "pk_test_"+base64.RawStdEncoding.EncodeToString([]byte(host+"$"))); again.Token() != "client-token-1" {
+		t.Errorf("not restored after a restart")
+	}
+	call("/v1/client/sessions/s/remove", "")
+	if _, err := os.Stat(filepath.Join(dir, "account-session")); !os.IsNotExist(err) {
+		t.Errorf("signing out kept the session file: %v", err)
+	}
+}
+
+func TestFrontendHost(t *testing.T) {
+	if h, err := frontendHost("pk_live_Y2xlcmsuY29keW5jLmRldiQ"); err != nil || h != "clerk.codync.dev" {
+		t.Errorf("%q %v", h, err)
+	}
+	if _, err := frontendHost("pk_live_" + base64.RawStdEncoding.EncodeToString([]byte("evil.example/path$"))); err == nil {
+		t.Error("accepted a key with a path")
 	}
 }

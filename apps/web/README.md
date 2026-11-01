@@ -68,7 +68,8 @@ Caddy in front: `codync.example.com { reverse_proxy 127.0.0.1:8080 }`.
 - **End-to-end encryption ends in the browser.** The device key is a non-extractable WebCrypto Ed25519 key in the browser's IndexedDB; the handshake (signed ephemeral X25519 → HKDF → ChaCha20-Poly1305) runs in the page. The server only forwards ciphertext: browsers can't set the relay's `Codync-Sig` header on a WebSocket or reach a host on the server's network, so the bridge opens that socket with the signature the browser computed and passes the channel's messages through unchanged.
 - The bridge reaches only the two channel endpoints of the protocol (`ws(s)://…/channel?v=1`, `wss://…/v1/relay/device/{id}?v=1`); the proxy only `https://…/v1/…`. Both need a signed-in session (HttpOnly, SameSite=Strict cookie) and same-origin requests.
 - Artifacts (bots' HTML) load through a service worker with a `Content-Security-Policy: sandbox` header: an opaque origin with no access to the app, its keys or its session. Their HTML never reaches the server.
-- Each browser is its own device, listed on the computer (`Codync Web · Chrome on macOS`) and revocable there (`codync-host devices revoke`).
+- The Codync account sign-in is kept on the server (`account-session` in the data directory, readable only by its user): the proxy adds it to the account provider's requests and never hands it to a browser, so every browser of this server is signed in to the same account. Signing out anywhere signs out everywhere.
+- Each browser is still its own device, with its own key: listed on the computer (`Codync Web · Chrome on macOS`), approved there once, and revocable there (`codync-host devices revoke`).
 
 ## Build
 

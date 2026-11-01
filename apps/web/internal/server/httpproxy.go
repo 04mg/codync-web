@@ -14,7 +14,8 @@ import (
 // no CORS headers for a self-hosted origin, so the browser asks this server to make the request.
 // The browser signs (`Codync-Sig`, with its own device key) and authenticates (`Authorization`)
 // the request itself; the server forwards it as is and returns the answer. Only `/v1/` paths of
-// https origins are reachable (TargetPolicy.CloudAPITarget).
+// https origins are reachable (TargetPolicy.CloudAPITarget). Requests to the account provider carry
+// the server's account session instead of anything the browser sends (AccountSession).
 
 const (
 	proxyMaxRequest  = 8 << 20
@@ -35,7 +36,7 @@ var proxyRequestHeaders = map[string]bool{
 }
 
 // Response headers handed back to the browser.
-var proxyResponseHeaders = []string{"Authorization", "Content-Type", "Retry-After"}
+var proxyResponseHeaders = []string{"Content-Type", "Retry-After"}
 
 type proxyRequest struct {
 	Method  string            `json:"method"`
@@ -82,9 +83,16 @@ func (s *Server) handleBridgeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	account := s.cfg.Account
+	owned := account.Owns(target)
 	for k, v := range req.Headers {
-		if proxyRequestHeaders[strings.ToLower(k)] && validHeaderValue(v) {
+		if proxyRequestHeaders[strings.ToLower(k)] && validHeaderValue(v) && !(owned && strings.EqualFold(k, "authorization")) {
 			up.Header.Set(k, v)
+		}
+	}
+	if owned {
+		if token := account.Token(); token != "" {
+			up.Header.Set("Authorization", token)
 		}
 	}
 	res, err := s.upstream.Do(up)
@@ -93,6 +101,11 @@ func (s *Server) handleBridgeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer res.Body.Close()
+	if v, ok := res.Header["Authorization"]; owned && ok && len(v) > 0 {
+		if err := account.Rotate(v[0]); err != nil {
+			s.log.Error("saving the account session", "error", err)
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(res.Body, proxyMaxResponse+1))
 	if err != nil || len(data) > proxyMaxResponse {
 		writeJSON(w, http.StatusOK, proxyResponse{Status: 0})
