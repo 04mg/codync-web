@@ -1,5 +1,5 @@
 {
-  "minApp": "2.34.0",
+  "minApp": "2.36.0",
   "shapes": {
     "event:bot": "object",
     "event:bot.bot": "object",
@@ -205,6 +205,7 @@
     "hello.hostId": "string",
     "hello.icons": "object",
     "hello.iconsRevision": "number",
+    "hello.joinAccount": "bool",
     "hello.latestVersion": "null",
     "hello.minApp": "string",
     "hello.name": "string",

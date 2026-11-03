@@ -65,6 +65,7 @@ export function CustomIconEditor({ target }: { target: string }) {
       ] : [
         { title: 'Continue with Apple', action: () => { setNeedsSignIn(false); void account.signIn('apple') } },
         { title: 'Continue with Google', action: () => { setNeedsSignIn(false); void account.signIn('google') } },
+        { title: 'Continue with GitHub', action: () => { setNeedsSignIn(false); void account.signIn('github') } },
       ]} />
     {(editor.error || session.errorMessage) && <Text size="caption" tone="danger">{editor.error || session.errorMessage}</Text>}
   </VStack>

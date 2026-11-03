@@ -156,6 +156,12 @@ public extension HostClient {
         let _: Empty = try await call("installHostUpdate")
     }
 
+    /// The computer signs `claim` for the account this phone paired from (`Hello.joinAccount`), as JSON to
+    /// pass on to `CloudClient.completeClaim` as it came.
+    func joinAccount(_ claim: CloudClaim) async throws -> Data {
+        try await transport.call("joinAccount", body: try Self.encoder.encode(claim), timeout: 20)
+    }
+
     func history(botId: String, beforeSeq: Int64, limit: Int = 100) async throws -> [Entry] {
         struct Body: Encodable { var botId: String; var beforeSeq: Int64; var limit: Int }
         struct Res: Decodable { var entries: [Entry] }
@@ -347,9 +353,19 @@ public extension HostClient {
         let _: Empty = try await call("registerDevice", Body(ticket: ticket, relay: relay, name: name, pushKey: pushKey, ctx: ctx))
     }
 
-    /// Stops this device's alerts; used when notifications are switched off in the app.
+    /// Stops this device's alerts: notifications switched off in the app, or the phone signed out.
     func unregisterDevice() async throws {
         let _: Empty = try await call("unregisterDevice")
+    }
+
+    /// Removes this device from the computer (deleting the account, starting over): its access and alerts go.
+    /// A computer older than `forgetDevice` only stops the alerts; the key is erased right after either way.
+    func forgetDevice() async throws {
+        do {
+            let _: Empty = try await call("forgetDevice")
+        } catch {
+            let _: Empty = try await call("unregisterDevice")
+        }
     }
 
     func registerActivity(botId: String, ticket: String) async throws {

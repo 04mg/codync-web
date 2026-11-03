@@ -226,6 +226,26 @@ export class WebAccount {
     }
   }
 
+  /**
+   * Deletes the signed-in user in Clerk (`DELETE /v1/me`); the cloud cleans up on Clerk's `user.deleted`.
+   * False when Clerk refused or couldn't be reached: then nothing changed here.
+   */
+  async deleteAccount(): Promise<boolean> {
+    const session = this.activeSession
+    if (this.state.busy || !session) return false
+    this.set({ busy: true, error: null })
+    try {
+      await this.request('DELETE', `/v1/me?_clerk_session_id=${encodeURIComponent(session.id)}`)
+    } catch {
+      return false
+    } finally {
+      this.set({ busy: false })
+    }
+    this.cachedJWT = null
+    await this.refreshClient().catch(() => this.applyClient(null))
+    return true
+  }
+
   /** The signed-in session's JWT for the Codync cloud (cached for under a minute). */
   async sessionToken(): Promise<string> {
     const session = this.activeSession

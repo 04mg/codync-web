@@ -7,9 +7,13 @@ released version's section; a version without one gets the PRs' "What's New: And
 else a generic "Bug fixes and improvements" line. Delete old sections.
 -->
 
-## 2.34.2
+## 2.38.0
 ### zh-Hant
-- 有很多 Docker 或虛擬機網路的電腦，現在也能配對與連線，不會再顯示配對碼已損毀。
+- 介面新增巴西葡萄牙文：可在設定選擇「Português (Brasil)」，或跟隨系統的葡萄牙文語言。
+- 新增俄文介面：在設定選擇「Русский」，或跟隨系統的俄文語言。
+- 用 QR Code 配對時，如果電腦當下沒能加入你的帳號（例如手機連不上 Codync 雲端，或電腦的雲端關著），下次連上時會自動補上。
 
 ### en-US
-- Computers with many Docker or virtual machine networks now pair and connect, instead of reporting a damaged pairing code.
+- Choose Português (Brasil) in Settings, or follow your Portuguese system language.
+- Choose Русский in Settings, or follow your Russian system language.
+- A computer you pair with a QR code that couldn't join your account at the time (the phone couldn't reach the Codync cloud, or the computer's cloud was off, say) joins it the next time it connects.
