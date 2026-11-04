@@ -82,6 +82,8 @@ make release    # Linux, macOS, Windows × amd64, arm64 → bin/release
 make test
 ```
 
+Releases take the version of the Codync client they bundle (`apps/desktop/package.json`): codync-web 2.38.0 is the Codync 2.38.0 client, so its number tells which hosts it works with. Tags are `web-vX.Y.Z`, since the upstream `vX.Y.Z` tags already exist in this repository.
+
 The app is the desktop renderer (`apps/desktop/src/renderer`) built with `apps/desktop/vite.web.config.ts` and the browser bridge in `apps/desktop/src/web`; `make ui` writes it to `internal/ui/dist`, which the binary embeds.
 
 End-to-end check against a real host (pairing, relay and direct routes, inner RPC, events):

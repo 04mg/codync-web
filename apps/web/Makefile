@@ -2,7 +2,8 @@
 #   make            build the app (npm) and the binary for this machine into bin/
 #   make release    the app once, then binaries for Linux, macOS and Windows (amd64 + arm64) as archives in bin/release
 #   make test       Go tests
-VERSION ?= $(shell git describe --tags --match 'web-v*' --always 2>/dev/null | sed 's/^web-v//')
+# Releases carry the Codync client's version (apps/desktop/package.json), tagged web-vX.Y.Z.
+VERSION ?= $(shell node -p "require('../desktop/package.json').version")
 LDFLAGS := -s -w -X main.version=$(VERSION)
 DESKTOP := ../desktop
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
