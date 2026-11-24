@@ -37,6 +37,8 @@ public final class AccountStore {
     public private(set) var pendingAccess: [ComputerID: AccessTicket] = [:]
     /// The actual request approved most recently, distinct from a previously paired computer.
     public private(set) var approvedAccess: [ComputerID: String] = [:]
+    /// The account's Codync Cloud computer (Settings); nil when signed out.
+    public let cloudMachine: CloudMachineStore?
     public var lastError: String?
     /// While pairing: the code the computer shows if it asks whether to let this phone in.
     public internal(set) var pairingCheck: String?
@@ -53,7 +55,7 @@ public final class AccountStore {
     public var onBotUpdated: (@MainActor (BotReference, Bot) -> Void)?
     public var onConnected: (@MainActor (BotStore) -> Void)?
     public var onSent: (@MainActor (BotReference, Bot, SendProgress) -> Void)?
-    /// The combined roster changed: a bot came, changed or went, or a computer did.
+    /// The combined roster changed: a bot came, changed or went, a computer did, or one's catch-up finished.
     public var onRosterChanged: (@MainActor ([RosterItem]) -> Void)?
 
     let cloud: CloudClient?
@@ -72,6 +74,8 @@ public final class AccountStore {
     var joining: Set<ComputerID> = []
     /// Computers asked from here to join this account, with the code they show meanwhile.
     var addingToAccount: [ComputerID: String] = [:]
+    /// Cloud computers already asked for access by themselves this session.
+    private var askedCloud: Set<ComputerID> = []
     private var isActive = true
     private(set) var retired = false
 
@@ -88,9 +92,20 @@ public final class AccountStore {
         cloudListLoaded = cloud == nil
         computerOrder = ComputerOrderStore(storage: storage)
         self.makeStore = makeStore
+        cloudMachine = cloud.map(CloudMachineStore.init)
         saved = storage.computers.filter(\.isConsistent)
         for computer in saved { open(computer) }
         computerOrder.onChanged = { [weak self] in self?.refreshList() }
+        cloudMachine?.onAccountChanged = { [weak self] removed in
+            if let removed { self?.forget(removed) }
+            await self?.refreshCloud()
+        }
+        // Its host tells the apps connected to it; this one shows it at once (the host may be asleep).
+        cloudMachine?.onRenamed = { [weak self] id, name in
+            self?.stores[id]?.hello?.name = name
+            self?.updateSaved(id) { $0.name = name }
+            await self?.refreshCloud()
+        }
         refreshList()
     }
 
@@ -105,6 +120,9 @@ public final class AccountStore {
             }
         }
     }
+
+    /// Computers whose roster may still trail the host: the icon badge goes by their latest alert instead.
+    public var computersBehind: Set<ComputerID> { Set(stores.filter { !$0.value.rosterIsCurrent }.keys) }
 
     public func store(for id: ComputerID) -> BotStore? { stores[id] }
 
@@ -163,7 +181,9 @@ public final class AccountStore {
             let list = try await cloud.computers()
             guard !retired, version == cloudListVersion else { return }
             if list != cloudComputers { Motion.animate { cloudComputers = list } }
+            for (id, store) in stores { setHosting(store, id) }
             learnRelay(from: list, cloud: cloud)
+            askCloudComputers()
         } catch let error as CloudError where !error.isTransient {
             lastError = error.localizedDescription
         } catch {
@@ -232,6 +252,44 @@ public final class AccountStore {
         _ = try await ask.value
     }
 
+    /// Codync Cloud computers approve this device by themselves: each one it can't use yet is asked once per
+    /// session, through the same request and code exchange as a tap on "Ask for access"; a request that failed or
+    /// ended unapproved is asked again on the next refresh. So is one listed as asked ("pending") that this device has
+    /// no request for: the cloud kept a request whose answer the network lost, and a new one replaces it there.
+    private func askCloudComputers() {
+        for computer in cloudComputers where computer.cloud != nil && stores[computer.computerId] == nil {
+            let id = computer.computerId
+            let lost = computer.access == "pending" && pendingAccess[id] == nil && asks[id] == nil
+            guard computer.access == "none" || lost, askedCloud.insert(id).inserted else { continue }
+            Task { [weak self] in
+                do {
+                    try await self?.requestAccess(id)
+                } catch {
+                    log.info("cloud computer access request failed: \(error.localizedDescription, privacy: .public)")
+                    self?.askedCloud.remove(id)
+                }
+            }
+        }
+    }
+
+    /// First run, waiting on cloud computer `id` now that it's in the account: asks the account again every `interval`
+    /// until this device uses it, so a lookup or an access request lost to the network doesn't leave the wait standing.
+    /// It ends with the waiting page, whose task this is. An error on screen is read first: asking again would only
+    /// show it again.
+    // ponytail: a fixed interval for as long as the page shows; back off if a wait ever lasts hours.
+    public func reachCloudComputer(_ id: ComputerID, every interval: Duration = .seconds(5)) async {
+        while !Task.isCancelled, !retired, stores[id] == nil {
+            try? await Task.sleep(for: interval)
+            guard !Task.isCancelled, !retired, stores[id] == nil else { return }
+            if lastError == nil { await refreshCloud() }
+        }
+    }
+
+    private func setHosting(_ store: BotStore, _ id: ComputerID) {
+        let hosting = cloudComputers.first { $0.computerId == id }?.cloud
+        if store.cloudHosting != hosting { store.cloudHosting = hosting }
+    }
+
     /// An offline account computer named like one this device uses or sees online: most likely the same
     /// machine under an earlier identity (its host keys were reset), left behind in the account.
     /// Seen after that one joined the account, it ran beside it: another machine with the same name.
@@ -278,7 +336,7 @@ public final class AccountStore {
     /// When the account or, for a computer only paired here, the relay last saw it.
     private func lastSeen(_ store: BotStore) -> Int64? {
         if let seen = cloudComputers.first(where: { $0.computerId == store.computer.id })?.lastSeenAt { return seen }
-        guard case let .computerOffline(date?) = store.connection else { return nil }
+        guard case let .computerOffline(date?, _) = store.connection else { return nil }
         return Int64(date.timeIntervalSince1970 * 1000)
     }
 
@@ -341,6 +399,8 @@ public final class AccountStore {
                 }
                 // Withdrawn by the account: the list shows what's left of it.
                 if reason == .cancelled { await refreshCloud() }
+                // A cloud computer is asked again by itself on the next refresh.
+                askedCloud.remove(ticket.computerId)
                 return
             }
         }
@@ -358,6 +418,7 @@ public final class AccountStore {
     public func retire() {
         retired = true
         computerOrder.retire()
+        cloudMachine?.retire()
         for store in stores.values { store.retire() }
         for poll in accessPolls.values { poll.cancel() }
         accessPolls = [:]
@@ -388,6 +449,7 @@ public final class AccountStore {
         }
         store.onComputerChanged = { [weak self] computer in self?.computerChanged(computer) }
         store.onRosterChanged = { [weak self] in self?.rosterChanged() }
+        setHosting(store, id)
         stores[id] = store
         if isActive { store.setActive(true) }
     }

@@ -116,7 +116,15 @@ from it. With computers in the account, the first page lists them (**Ask for acc
 is requested until the tap, since the user may be here to set up another computer) next to
 **Pair a new computer**, which leads to the install page. With none, or only older copies, setup
 goes straight to the install page. That page has a button that copies the website's link,
-to open on the computer. A computer that joins the account meanwhile brings up the first page the next
+to open on the computer. Signed in, while Codync Cloud is open to the account, both pages also offer
+**Start a cloud computer** (first run only, not the pairing sheet from Computers): once one is created, a wait page
+(`CloudStartView`) replaces the setup pages, preparing → connecting → the tabs once it's reached; it fails → its
+message. While connecting, the page asks the account again every 5 s (`reachCloudComputer`), so a lookup or an access
+request the network lost doesn't leave it waiting: a cloud computer the account lists as asked while the phone holds no
+request for it is asked again, and such a request fails without a dialog. **Back** in any stage returns to the pages
+and stops waiting for that one, **Skip** finishes setup. A cloud
+computer of the account still preparing, made on another device too, also leads there
+([Codync Cloud](../plans/codync-cloud.md)). A computer that joins the account meanwhile brings up the first page the next
 time the app is opened, unless the user already chose to pair or moved on to scanning. Only
 reaching a computer or **Skip** finishes setup. The first page and the scan step always offer
 **Skip**. Skipping finishes onboarding and opens the main
@@ -125,7 +133,7 @@ offers **Computers** to pair later. Skipping while adding a computer from settin
 only closes that pairing sheet. It does not grant access to a computer or change
 the account approval flow. **Start over** resets the onboarding choice.
 
-The desktop app's menu bar **Settings → Reset all data…** (confirmed in the window) is
+The desktop app's menu bar **Settings → Reset all data…**, or **Reset everything** in Settings → Computers → Reset (both asked twice in the window), is
 the computer's start over: it removes this computer from the account, revokes every
 paired device, signs out, uninstalls the host, deletes its data folder and the app's
 settings, and relaunches into the welcome screen. The host comes back with a new
@@ -134,7 +142,7 @@ and phones and the desktop app see it as an older copy once the new one is reach
 (offline, named like a computer they use or see online, and last seen before that one
 joined the account) and offer to remove it; pair again or ask for access to reach the new one.
 
-On the computer, open Codync in the menu bar and choose **Pair iPhone…**, then scan the
+On the computer, open Codync in the menu bar and choose **Pair phone…**, then scan the
 code on the phone (or paste its `codync://pair` link, or type the short code
 `codync-host pair` prints). The phone sends a device certificate from the cloud with
 `pair`, and the host checks it offline: a computer in an account lets in phones of that
@@ -232,11 +240,12 @@ A simulator build verifies compilation, not the Dashboard settings or OAuth flow
 ## Desktop: computers, approvals and SSH
 
 The desktop app attaches this computer's host and its SSH computers over loopback; they
-follow into whichever account is active. The account's other computers are not reached
-directly (the encrypted channel wasn't ported to the desktop app), so their
-"Ask for access" rows show status only. An older copy of a computer the app uses shows
+follow into whichever account is active. The account's Codync Cloud computer is attached over the relay's
+encrypted channel, while the window is in use ([desktop app](../architecture/desktop-app.md)). The account's other
+computers are not reached directly, so their "Ask for access" rows show status only. An older copy of a computer the app uses shows
 *Older copy · last seen …*. Every offline row has *Remove from account* (`DELETE /v1/computers/{id}`,
-confirmed first), so a computer that was reset or given away can be cleaned up even when its
+confirmed first), except the Codync Cloud computer, which is deleted in its own section (the cloud refuses to take
+it out of the account), so a computer that was reset or given away can be cleaned up even when its
 name changed. Offline may only mean asleep, so the dialog says what removal does: account-approved
 devices lose access, and the computer's own app doesn't add it back by itself. The phones have no
 such action: removing a computer from the account takes the desktop app (or `codync-host cloud --leave`
@@ -279,6 +288,18 @@ so development sandboxes stay separate. Windows inspects native OpenSSH
 processes and terminates only tunnels whose executable and quoted known-hosts
 path match this app. It uses Windows' OpenSSH Client feature and the device's
 existing SSH config and agent.
+
+The remote shell decides the command lines. Before asking for the identity, the app sends one probe,
+`echo %OS% $env:OS`, that `cmd.exe`, PowerShell and a POSIX shell all accept and answer differently
+(`remoteShell` in `main/ssh-command.ts`), and keeps the answer per profile (`main/ssh-shells.ts`) until the
+profile is edited or the identity command fails, so a changed default shell is probed again.
+A Mac or Linux computer gets `sh -lc 'codync-host info …'`. A Windows computer (OpenSSH Server: `cmd.exe`
+by default, PowerShell when the admin changed it) gets the same `codync-host info --json --port N` with
+`%LOCALAPPDATA%\Programs\codync-desktop\resources` appended to its PATH, because the desktop app's
+installer puts `codync-host.exe` there but not on PATH; a missing host exits 127 there too. The tunnel runs no
+remote command, so it is the same `-L` forward everywhere. Codync has no installer to run over SSH on
+Windows (the host ships inside the desktop app), so its card says to install the Codync app there and open
+it once, instead of *Install*.
 
 A computer without the host shows *Install* on its card (production app only; there is no
 released development host): two SSH commands from `main/ssh-command.ts`, the released

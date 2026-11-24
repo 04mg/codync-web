@@ -17,9 +17,21 @@ impl App {
             return;
         }
         let s = s.replace("\r\n", "\n").replace('\r', "\n");
+        // A file dragged onto the terminal while writing to a thread that takes files: attach it there.
+        let takes_files = matches!(self.overlays.last(), Some(Overlay::Thread(sheet))
+            if sheet.typing && sheet.task(self).is_some_and(|task| task.talk_files));
+        if takes_files
+            && let Some(paths) = dropped_files(&s)
+            && let Some(Overlay::Thread(sheet)) = self.overlays.last_mut()
+        {
+            sheet.files.extend(paths);
+            return;
+        }
         if let Some(ed) = self.top_editor() {
             ed.insert(&s);
-        } else if let Some(key) = self.selected.clone() {
+        } else if !self.paste_find(&s)
+            && let Some(key) = self.selected.clone()
+        {
             self.typing = true;
             self.focus = Focus::Chat;
             // A file dragged onto the terminal pastes its path: attach it.
@@ -50,6 +62,7 @@ impl App {
                 _ => None,
             },
             Overlay::Market(m) => Some(&mut m.query),
+            Overlay::Thread(s) if s.typing => Some(&mut s.draft),
             Overlay::Fields(f) => f.current().map(|i| &mut i.ed),
             Overlay::Routine(f) => Some(match f.field {
                 super::super::manage::RoutineField::Name => &mut f.name,
@@ -76,6 +89,10 @@ impl App {
         }
         if !self.overlays.is_empty() {
             self.overlay_key(k);
+            return;
+        }
+        if self.find.is_some() {
+            self.find_key(k);
             return;
         }
         if self.typing {
@@ -137,12 +154,7 @@ impl App {
                 if let Some(pasted) = self.pasted.get(&key).filter(|p| !p.is_empty()) {
                     body["pasted"] = json!(pasted);
                 }
-                let after = After::Sent(key);
-                if files.is_empty() {
-                    self.call("send", body, after);
-                } else {
-                    self.client.spawn_send_files(body, files, after, self.tx.clone());
-                }
+                self.send_message(body, files, After::Sent(key));
                 self.flash("Sending… Your draft stays here until delivered.");
             }
             KeyCode::Backspace if draft.text.is_empty() => {
@@ -192,10 +204,12 @@ impl App {
             KeyCode::Char('u') if ctrl => self.scroll_focused(half),
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('C') => self.open_connection(),
-            KeyCode::Char('F') => self.retry_failed_run(),
+            KeyCode::Char('F') => self.retry_or_continue(),
             KeyCode::Char('I') if self.error.is_some() && self.bots.is_empty() => self.install_host(),
             KeyCode::Char('I') if self.bot().is_some_and(|b| b.lead) => self.overlays.push(Overlay::LeadAgent(0)),
             KeyCode::Char('?') => self.overlays.push(Overlay::Help(Editor::default())),
+            KeyCode::Char('/') if !roster_page => self.open_find(),
+            KeyCode::Char('f') if ctrl && !roster_page => self.open_find(),
             KeyCode::Char('!') => self.jump(Mark::Need),
             KeyCode::Char('u') => self.jump(Mark::Unread),
             KeyCode::Char('[') => self.move_bot(-1),
@@ -206,10 +220,16 @@ impl App {
             KeyCode::Char('J') => self.reorder_bot(1),
             KeyCode::Char(c @ '1'..='9') => {
                 let i = (c as usize) - ('1' as usize);
-                let pending = if roster_page { None } else { self.pending().map(|e| (e.id.clone(), e.options())) };
+                // Only a card the bot waits on, or the picked one: a choice card left open by an idle bot keeps its
+                // F-keys, so 1–9 still jump to a bot.
+                let waits = self.bot().is_some_and(|b| b.status == Status::NeedsInput);
+                let pending = self
+                    .pending()
+                    .filter(|e| !roster_page && (waits || self.pick.as_ref() == Some(&e.id)))
+                    .map(|e| (e.id.clone(), e.answer_options()));
                 match pending {
                     Some((entry, opts)) if !opts.is_empty() => {
-                        if let Some((option, _, _)) = opts.get(i) {
+                        if let Some(option) = opts.get(i) {
                             self.answer(&entry, option);
                         }
                     }
@@ -220,7 +240,17 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char(c @ ('y' | 'a' | 'n' | 'N')) if !roster_page && self.pending().is_some() => {
+            KeyCode::F(n @ 1..=12) if !roster_page => {
+                if let Some((id, option)) = self
+                    .pending_of(Kind::Decision)
+                    .and_then(|e| e.choices().get(usize::from(n - 1)).cloned().map(|option| (e.id.clone(), option)))
+                {
+                    self.answer(&id, &option);
+                }
+            }
+            KeyCode::Char(c @ ('y' | 'a' | 'n' | 'N'))
+                if !roster_page && self.pending_of(Kind::Permission).is_some() =>
+            {
                 self.answer_kind(c);
             }
             KeyCode::Char('n') => self.new_bot(),
@@ -309,7 +339,9 @@ impl App {
             KeyCode::Char('b') => self.compact = !self.compact,
             KeyCode::Char('U') => self.overlays.push(Overlay::Usage(0)),
             KeyCode::Char('M') => self.open_memory(),
-            KeyCode::Char('R') => self.open_routines(),
+            // `B` is the same page from the chat, where the line over the composer names it.
+            KeyCode::Char('R' | 'B') => self.open_details(),
+            KeyCode::Char('O') => self.open_computer(),
             KeyCode::Char('L') => self.open_library(),
             KeyCode::Char('A') => self.open_market(),
             KeyCode::Char('r' | 'v') if !roster_page && self.selected.is_some() => {
@@ -332,6 +364,7 @@ impl App {
             }
             KeyCode::Char('S') => self.steer_next(),
             KeyCode::Char('D') => self.unqueue_last(),
+            KeyCode::Char('X') => self.ask_stop_work(),
             KeyCode::Char('*') => self.make_lead(),
             KeyCode::Char('x') => {
                 // An older host keeps its lead.
@@ -364,6 +397,7 @@ impl App {
             }
             KeyCode::Char('w') => self.ask_section(),
             KeyCode::Char('W') => self.ask_rename_section(),
+            KeyCode::Char('E') => self.open_all_work(),
             KeyCode::Char('z') => self.toggle_section(),
             KeyCode::Char('c') => self.copy_last(),
             _ => {}
@@ -435,7 +469,8 @@ impl App {
 
 /// Paths a terminal pastes for dropped files (shell-escaped, quoted or `file://`), when every one is a file.
 fn dropped_files(s: &str) -> Option<Vec<std::path::PathBuf>> {
-    let paths: Vec<std::path::PathBuf> = shlex::split(s.trim())?
+    let words = if cfg!(windows) { windows_words(s.trim())? } else { shlex::split(s.trim())? };
+    let paths: Vec<std::path::PathBuf> = words
         .into_iter()
         .map(|p| match p.strip_prefix("file://") {
             Some(url) => url.replace("%20", " "),
@@ -444,6 +479,37 @@ fn dropped_files(s: &str) -> Option<Vec<std::path::PathBuf>> {
         .map(std::path::PathBuf::from)
         .collect();
     (!paths.is_empty() && paths.iter().all(|p| p.is_absolute() && p.is_file())).then_some(paths)
+}
+
+/// How Windows terminals paste paths: as they are, one with spaces in double quotes. A backslash is part of the path,
+/// not an escape as in a Unix shell. `None` for an unclosed quote.
+fn windows_words(s: &str) -> Option<Vec<String>> {
+    let (mut words, mut word, mut quoted) = (vec![], String::new(), false);
+    for c in s.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            c => word.push(c),
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    (!quoted).then_some(words)
+}
+
+#[cfg(test)]
+mod windows_paste_tests {
+    #[test]
+    fn windows_paths_keep_their_backslashes_and_quoted_spaces() {
+        let words = super::windows_words(r#"C:\Users\me\a.png "C:\My Files\b c.txt""#);
+        assert_eq!(words, Some(vec![r"C:\Users\me\a.png".to_owned(), r"C:\My Files\b c.txt".to_owned()]));
+        assert_eq!(super::windows_words(r#""C:\open"#), None);
+    }
 }
 
 #[cfg(all(test, unix))]

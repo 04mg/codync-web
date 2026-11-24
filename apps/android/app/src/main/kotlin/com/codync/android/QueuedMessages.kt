@@ -47,9 +47,10 @@ internal val AppState.supportsQueueActions: Boolean
 
 /**
  * The user's messages waiting behind the bot's work, as iOS `QueuedMessages`: each one line, sent now into the running
- * turn ([steer]) or taken back ([unqueue]).
+ * turn ([steer]) or taken back ([remove]): the chat's own unless said (a thread's go by its task).
  */
-@Composable internal fun QueuedMessages(entries: List<Entry>, state: AppState, store: AppStore, modifier: Modifier = Modifier) {
+@Composable internal fun QueuedMessages(entries: List<Entry>, state: AppState, store: AppStore, modifier: Modifier = Modifier,
+    steer: (Entry) -> Unit = { store.steer(it) }, remove: (Entry) -> Unit = { store.unqueue(it) }) {
     // The card keeps its last rows while it folds away.
     var shown by remember { mutableStateOf(entries) }
     if (entries.isNotEmpty() && entries != shown) shown = entries
@@ -69,7 +70,7 @@ internal val AppState.supportsQueueActions: Boolean
         Column(Modifier.fillMaxWidth().clip(RoundedRectangle(18.dp)).background(Palette.surface).animateContentSize(Motion.layoutSize)
             .heightIn(max = 190.dp).verticalScroll(scroll).padding(vertical = 2.dp)) {
             for (entry in shown) key(entry.id) {
-                QueuedRow(entry, actions, steering = "steer:" + entry.id in state.busy, steer = { store.steer(entry) }, remove = { store.unqueue(entry) })
+                QueuedRow(entry, actions, steering = "steer:" + entry.id in state.busy, steer = { steer(entry) }, remove = { remove(entry) })
             }
         }
     }
@@ -78,7 +79,12 @@ internal val AppState.supportsQueueActions: Boolean
 @Composable private fun QueuedRow(entry: Entry, actions: Boolean, steering: Boolean, steer: () -> Unit, remove: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(messagePreview(entry.replyQuote.text), Modifier.weight(1f).padding(vertical = if (actions) 0.dp else 9.dp),
+        val files = entry.attachments
+        // Its files show as a symbol, and by name when it has no words.
+        if (files.isNotEmpty()) Symbol(if (files.all { it.isImage }) "photo" else "doc", size = 13.dp, tint = Palette.secondary,
+            modifier = Modifier.padding(end = 4.dp))
+        val text = entry.replyQuote.text.ifEmpty { files.joinToString(", ") { it.name } }
+        Text(messagePreview(text), Modifier.weight(1f).padding(vertical = if (actions) 0.dp else 9.dp),
             style = Type.subheadline, color = Palette.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (actions) {
             IconButton("Send now", "arrow.turn.down.right", enabled = !steering, action = steer)

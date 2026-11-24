@@ -14,10 +14,12 @@ mod schema;
 mod workspaces;
 
 pub use devices::{Device, DeviceAccount, DeviceSource, Scope};
+pub use entries::INTERRUPTED;
 pub use model::{
-    AVATAR_COLORS, AVATAR_SHAPES, BotConfig, BotKind, BotRow, Entry, EntryKind, Fallback, Lane, Permission,
-    message_text, run_session_key,
+    AVATAR_COLORS, AVATAR_SHAPES, BotConfig, BotKind, BotRow, DEFAULT_THREADS, Entry, EntryKind, Fallback, Lane,
+    MAX_THREADS, Permission, THREAD_PREFIX, is_thread_id, message_text, run_session_key,
 };
+pub use schema::SCHEMA;
 
 use crate::LockExt;
 use anyhow::Result;
@@ -73,6 +75,11 @@ impl Store {
     pub fn kv_delete(&self, k: &str) -> Result<()> {
         self.db.locked().execute("DELETE FROM kv WHERE k = ?1", [k])?;
         Ok(())
+    }
+
+    /// Deletes every row whose value starts with `prefix`; returns how many went.
+    pub fn kv_delete_values(&self, prefix: &str) -> Result<usize> {
+        Ok(self.db.locked().execute("DELETE FROM kv WHERE substr(v, 1, length(?1)) = ?1", [prefix])?)
     }
 
     /// Keys starting with `prefix`.

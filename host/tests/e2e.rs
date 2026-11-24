@@ -168,6 +168,21 @@ async fn turn_with_approval_reaches_a_final_reply() {
 
     let card = host.wait_for(&bot, |e| e["kind"] == "permission" && e["data"]["status"] == "pending").await;
     assert_eq!(card["data"]["title"], "Edit a.txt");
+    // What the apps decode, field for field.
+    let shown =
+        |data: &Value, keys: &[&str]| keys.iter().map(|k| ((*k).to_owned(), data.get(*k).cloned())).collect::<Vec<_>>();
+    let card_keys = ["title", "toolKind", "command", "detail", "diffs", "options", "status", "selected"];
+    assert_eq!(
+        shown(&card["data"], &card_keys),
+        shown(
+            &json!({"title": "Edit a.txt", "toolKind": "edit", "command": "sed -i s/x/y/ a.txt", "detail": "",
+                "diffs": [], "status": "pending", "selected": null, "options": [
+                    {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "always", "name": "Always", "kind": "allow_always"},
+                    {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
+            &card_keys
+        )
+    );
     let bots = common::snapshot(&host.base, &host.token).await;
     assert_eq!(common::bot(&bots, &bot)["status"], "needsInput");
 
@@ -184,10 +199,60 @@ async fn turn_with_approval_reaches_a_final_reply() {
     let tool = entries.iter().find(|e| e["kind"] == "tool").unwrap();
     assert_eq!(tool["data"]["status"], "completed");
     assert_eq!(tool["data"]["diffs"][0]["added"], 1);
+    let tool_keys = ["toolCallId", "title", "toolKind", "status", "output", "locations"];
+    assert_eq!(
+        shown(&tool["data"], &tool_keys),
+        shown(
+            &json!({"toolCallId": "t1", "title": "Edit a.txt", "toolKind": "edit", "status": "completed", "output": "",
+                "locations": null}),
+            &tool_keys
+        )
+    );
+    // A subagent's call names its launch, and the launch reports what the subagent did.
+    let data_of = |id: &str| &entries.iter().find(|e| e["data"]["toolCallId"] == id).unwrap()["data"];
+    assert_eq!((&data_of("c1")["parent"], &data_of("c1")["bookkeeping"]), (&json!("a1"), &json!(false)));
+    // Handing its report back is the subagent's plumbing, left out of the working steps.
+    assert_eq!((&data_of("h1")["parent"], &data_of("h1")["bookkeeping"]), (&json!("a1"), &json!(true)));
+    assert_eq!(
+        data_of("a1")["subagent"],
+        json!({"kind": "general-purpose", "model": "claude-opus-5-5", "background": false, "tokens": 42310,
+            "toolUses": 1, "durationMs": 6287})
+    );
+    assert_eq!((tool["data"].get("parent"), tool["data"].get("subagent")), (None, None));
+    let plan = entries.iter().find(|e| e["kind"] == "plan").unwrap();
+    assert_eq!(plan["data"]["entries"], json!([{"content": "edit", "status": "completed", "priority": "high"}]));
+    assert_eq!(plan["data"]["author"], bot.as_str());
 
     let synced = common::snapshot(&host.base, &host.token).await;
     assert_eq!(common::bot(&synced, &bot)["status"], "idle");
     assert_eq!(common::bot(&synced, &bot)["unread"], 1);
+}
+
+#[tokio::test]
+async fn a_deleted_bots_card_leaves_the_groups_badge() {
+    // Issue #366: the card sits in the group's chat, which outlives the bot that asked.
+    if Command::new(common::python()).arg("--version").output().is_err() {
+        eprintln!("skipping: Python not available");
+        return;
+    }
+    let host = start_host().await;
+    let agent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fake_agent.py");
+    let asking = json!({
+        "name": "Tester", "backend": "custom", "command": common::python_agent(&agent),
+        "cwd": host.home.to_string_lossy(), "permission": "ask",
+    });
+    let bot = host.call("createBot", asking).await["bot"]["id"].as_str().unwrap().to_owned();
+    let group = host.call("createBot", json!({"name": "Group", "kind": "group", "members": [bot]})).await;
+    let group = group["bot"]["id"].as_str().unwrap().to_owned();
+    let waiting = async || common::bot(&common::snapshot(&host.base, &host.token).await, &group)["waiting"].clone();
+
+    host.call("send", json!({"botId": group, "text": "@Tester go"})).await;
+    let card = host.wait_for(&group, |e| e["kind"] == "permission" && e["data"]["status"] == "pending").await;
+    assert_eq!(waiting().await, 1);
+
+    host.call("deleteBot", json!({"botId": bot})).await;
+    host.wait_for(&group, |e| e["id"] == card["id"] && e["data"]["status"] == "expired").await;
+    assert_eq!(waiting().await, 0);
 }
 
 #[tokio::test]
@@ -229,6 +294,17 @@ async fn sent_messages_are_the_reply() {
     host.call("chatCall", send("Fixing the typo now.")).await;
     let first = host.wait_for(&bot, |e| e["kind"] == "agent" && e["data"]["text"] == "Found it.").await;
     assert_eq!(first["data"]["final"], true);
+    // `reply_to` quotes a message of the chat above the bot's (issue #402); one it can't quote still goes out, unquoted.
+    let asked = host.wait_for(&bot, |e| e["kind"] == "user").await;
+    let quoting = |text: &str, id: &Value| json!({"botId": bot, "name": "send_message", "arguments": {"text": text, "reply_to": id}});
+    let answer = host.call("chatCall", quoting("About that:", &asked["id"])).await;
+    assert!(answer.get("warning").is_none(), "{answer}");
+    let quoted = host.wait_for(&bot, |e| e["kind"] == "agent" && e["data"]["text"] == "About that:").await;
+    assert_eq!(quoted["data"]["replyTo"], json!({"id": asked["id"], "author": "user", "text": "go"}));
+    let answer = host.call("chatCall", quoting("Unquoted.", &json!("no-such-message"))).await;
+    assert!(answer["warning"].as_str().is_some_and(|w| w.contains("no-such-message")), "{answer}");
+    let unquoted = host.wait_for(&bot, |e| e["kind"] == "agent" && e["data"]["text"] == "Unquoted.").await;
+    assert!(unquoted["data"]["replyTo"].is_null());
 
     host.call("respondPermission", json!({"entryId": card["id"], "optionId": "allow"})).await;
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -245,13 +321,14 @@ async fn sent_messages_are_the_reply() {
         .filter(|e| e["kind"] == "agent" && e["data"]["final"] == true)
         .map(|e| e["data"]["text"].as_str().unwrap())
         .collect();
-    assert_eq!(finals, ["Found it.", "Fixing the typo now."]);
+    assert_eq!(finals, ["Found it.", "Fixing the typo now.", "About that:", "Unquoted."]);
 
     // Work the agent goes on with after its turn (a background subagent) still reaches the user.
-    host.call("chatCall", send("The background check passed.")).await;
+    host.call("chatCall", quoting("The background check passed.", &asked["id"])).await;
     let late =
         host.wait_for(&bot, |e| e["kind"] == "agent" && e["data"]["text"] == "The background check passed.").await;
     assert_eq!((&late["data"]["final"], &late["data"]["author"]), (&json!(true), &json!(bot)));
+    assert_eq!(late["data"]["replyTo"]["id"], asked["id"], "a background result quotes too");
 }
 
 #[tokio::test]
@@ -427,7 +504,7 @@ async fn phone_pairs_and_chats_over_the_direct_channel() {
 }
 
 #[tokio::test]
-async fn personal_workspaces_are_unique_persistent_and_optional() {
+async fn own_folders_are_unique_persistent_and_optional() {
     let host = start_host().await;
     let agent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace_agent.py");
     let first = host

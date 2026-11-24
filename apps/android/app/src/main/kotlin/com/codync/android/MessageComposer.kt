@@ -36,6 +36,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -108,32 +111,16 @@ private enum class Trailing { Interrupt, Stop, Call, Send }
         val external = draft?.text.orEmpty()
         if (external != text.text.toString() && external !in echoes) text.setTextAndPlaceCursorAtEnd(external)
     }
-    val clipboard = LocalClipboard.current
     val context = LocalContext.current
-    val clips = context.getSystemService(ClipboardManager::class.java)
     val scope = rememberCoroutineScope()
     // Dictation stops with its chat or draft (another chat, an artifact's box) and when the box goes.
     val dictation = remember(draftKey) { Dictation(context, scope) }
     DisposableEffect(dictation) { onDispose { dictation.stop() } }
-    val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
-        if (uris.isNotEmpty()) store.importFiles(uris) { store.addDraftFiles(draftKey, it) }
-    }
-    val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) store.importFiles(uris) { store.addDraftFiles(draftKey, it) }
-    }
-    val receiver = remember(draftKey, importing, queuing) { ReceiveContentListener { content ->
-        if (importing || queuing) content else {
-            val uris = mutableListOf<android.net.Uri>()
-            val remaining = content.consume { item -> item.uri?.takeIf { it.scheme == "content" }?.let { uris.add(it); true } ?: false }
-            if (uris.isNotEmpty()) store.importFiles(uris) { store.addDraftFiles(draftKey, it) }
-            remaining
-        }
-    } }
+    val receiver = fileReceiver(store, draftKey, importing || queuing)
     val online = state.actualConnection is LinkState.Ready
     val empty = text.text.isBlank() && files.isEmpty()
-    // Offline computers still take text: the relay holds it for them, or with no relay this phone does. Files need the computer.
-    val canHold = state.actualConnection is LinkState.ComputerOffline || holdsOnPhone(state.computer.cloud, state.actualConnection)
-    val canSend = !empty && !importing && !queuing && (online || canHold && files.isEmpty())
+    // Offline computers still take text (`holdsText`). Files need the computer.
+    val canSend = !empty && !importing && !queuing && (online || state.holdsText && files.isEmpty())
     val working = bot.isWorking(bot.id)
     val bare = text.text.isEmpty() && files.isEmpty()
     val trailing = when {
@@ -162,24 +149,26 @@ private enum class Trailing { Interrupt, Stop, Call, Send }
     fun clear() = text.edit { replace(0, length, "") }
     fun mention(member: Bot) = text.setTextAndPlaceCursorAtEnd(typed.substring(0, typed.lastIndexOf('@')) + "@${member.name} ")
     fun run(command: SlashCommand) {
-        val skill = command.skill
-        when {
-            skill != null -> text.setTextAndPlaceCursorAtEnd("/$skill ")
-            else -> { store.toggleFastMode(bot); clear() }
-        }
+        if (command.fills) text.setTextAndPlaceCursorAtEnd("/${command.name} ") else { store.toggleFastMode(bot); clear() }
     }
-    fun send() {
-        // Words still on their way would land in the emptied box.
+    fun sendNow() {
+        // A start still waiting (the key check) never opens the microphone after the send.
         dictation.stop()
-        val command = if (files.isEmpty()) SlashCommands.builtIn(bot, typed, members) else null
-        if (command != null) run(command) else store.sendDraft(draftKey, bot.id, typed, replyTo) { clear(); cancelReply() }
+        // The box now, not as composed: a send after dictation has the transcript too.
+        val message = text.text.toString()
+        val command = if (files.isEmpty()) SlashCommands.builtIn(bot, message, members) else null
+        if (command != null) run(command) else store.sendDraft(draftKey, bot.id, message, replyTo) { clear(); cancelReply() }
     }
+    // The composition current when the transcript arrives: a reply cancelled while it transcribes stays cancelled.
+    val latestSend by rememberUpdatedState(::sendNow)
+    // Sent once the words still on their way are in the box, with what was typed.
+    fun send() = if (dictation.busy) dictation.finish { latestSend() } else sendNow()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
     // Over the box, past the + button.
     QueuedMessages(queued, state, store, Modifier.padding(start = 16.dp + FIELD_HEIGHT + 8.dp, end = 16.dp))
     AnimatedVisibility(commands.isNotEmpty(), enter = fadeIn(Motion.fade()) + expandVertically(Motion.layoutSize),
         exit = fadeOut(Motion.fade()) + shrinkVertically(Motion.layoutSize)) {
-        CommandList(commands, ::run, Modifier.padding(horizontal = 16.dp))
+        CommandList(commands, { agentRegistry(state, it) }, { backendName(state, it) }, ::run, Modifier.padding(horizontal = 16.dp))
     }
     AnimatedVisibility(mentions.isNotEmpty(), enter = fadeIn(Motion.fade()) + expandVertically(Motion.layoutSize),
         exit = fadeOut(Motion.fade()) + shrinkVertically(Motion.layoutSize)) {
@@ -187,18 +176,7 @@ private enum class Trailing { Interrupt, Stop, Call, Send }
     }
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp), verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        DropdownMenu({ buildList {
-            add(MenuItem("Photos", icon = "photo.on.rectangle") { photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
-            add(MenuItem("Files", icon = "folder") { documents.launch(arrayOf("*/*")) })
-            // Only the clip's description: reading the clip itself would show Android's paste notice.
-            if (clipOffersFiles(clips.primaryClipDescription?.mimeTypes().orEmpty())) add(MenuItem("Paste", icon = "doc.on.clipboard") { scope.launch {
-                val data = clipboard.getClipEntry()?.clipData
-                val uris = if (data == null) emptyList() else (0 until data.itemCount).mapNotNull { data.getItemAt(it).uri?.takeIf { uri -> uri.scheme == "content" } }
-                if (uris.isNotEmpty()) store.importFiles(uris) { store.addDraftFiles(draftKey, it) }
-            } })
-        } }, Modifier.size(FIELD_HEIGHT).glass(Capsule()), enabled = !queuing, label = "Add files") {
-            Symbol("plus", size = 26.dp, tint = Palette.text)
-        }
+        AddFilesButton(store, draftKey, enabled = !queuing)
         Column(Modifier.weight(1f).glass(RoundedRectangle(24.dp)).animateContentSize(Motion.layoutSize)) {
             // Each quote keeps its own bar through the transition, so a cancelled one fades out with its text.
             AnimatedContent(replyTo?.text?.takeIf { about == null }, transitionSpec = { fadeIn(Motion.fade()) togetherWith fadeOut(Motion.fade()) },
@@ -208,39 +186,124 @@ private enum class Trailing { Interrupt, Stop, Call, Send }
                     IconButton("Cancel reply", "xmark", action = cancelReply)
                 }
             }
-            if (files.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 10.dp, end = 10.dp, top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (file in files) ComposerAttachment(file) { store.removeDraftFile(draftKey, file) }
-            }
-            Row(Modifier.padding(start = 18.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // A hardware keyboard's Enter is a new line; Ctrl/Meta+Enter (⌘↩ on iOS) sends, and never stops or calls.
-                val sendKey = Modifier.onPreviewKeyEvent { e ->
-                    val ctrlEnter = e.type == KeyEventType.KeyDown && e.key == Key.Enter && (e.isCtrlPressed || e.isMetaPressed)
-                    if (ctrlEnter && trailing == Trailing.Send && canSend) send()
-                    ctrlEnter
-                }
-                BasicTextField(state = text, enabled = !queuing, modifier = Modifier.weight(1f).focusRequester(focus).contentReceiver(receiver).then(sendKey).padding(vertical = 10.dp),
-                    textStyle = Type.body.copy(color = Palette.text), cursorBrush = SolidColor(Palette.accent),
-                    lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 8),
-                    decorator = { input -> Box { if (text.text.isEmpty()) Text(placeholder, style = Type.body, color = Palette.tertiary, maxLines = 1, overflow = TextOverflow.Ellipsis); input() } })
+            DraftFiles(files, store, draftKey)
+            ComposerInput(text, placeholder, trailing, canSend, enabled = !queuing, field = Modifier.focusRequester(focus).contentReceiver(receiver), accessory = {
                 Box(Modifier.padding(bottom = 4.dp)) {
                     DictationButton(dictation, state, store, 34.dp, { text.text.toString() }) { change ->
                         text.setTextAndPlaceCursorAtEnd(change(text.text.toString()))
                     }
                 }
-                TrailingButton(trailing, canSend, Modifier.padding(bottom = 4.dp)) {
-                    when (trailing) {
-                        Trailing.Interrupt -> onInterrupt?.invoke()
-                        Trailing.Stop -> store.command("stop", body("botId" to bot.id))
-                        // The call takes the microphone.
-                        Trailing.Call -> { dictation.stop(); onCall?.invoke() }
-                        Trailing.Send -> send()
-                    }
+            }) {
+                when (trailing) {
+                    Trailing.Interrupt -> onInterrupt?.invoke()
+                    Trailing.Stop -> store.command("stop", body("botId" to bot.id))
+                    // The call takes the microphone.
+                    Trailing.Call -> { dictation.stop(); onCall?.invoke() }
+                    Trailing.Send -> send()
                 }
             }
         }
     }
+    }
+}
+
+/**
+ * The chat's box under a task's thread, with its + for files where the computer takes them ([takesFiles]) but no
+ * microphone: [send] takes what was typed (the draft's files go with it), only while the computer is there to take it.
+ * What is typed and added is saved under [draftKey], as a chat's draft is. The messages waiting behind the thread's turn
+ * show on top as a chat's do ([queued], with [steer] and [remove]).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable internal fun ThreadComposer(state: AppState, store: AppStore, draftKey: String, takesFiles: Boolean, queued: List<Entry>,
+    steer: (Entry) -> Unit, remove: (Entry) -> Unit, send: (String) -> Unit) {
+    val text = rememberTextFieldState(initialText = state.drafts[draftKey]?.text.orEmpty())
+    LaunchedEffect(text, draftKey) { snapshotFlow { text.text.toString() }.collect { store.editDraft(draftKey, it) } }
+    val placeholder = tr("Message this thread")
+    val files = state.drafts[draftKey]?.files.orEmpty()
+    val importing = "attachments" in state.busy
+    val canSend = (text.text.isNotBlank() || files.isNotEmpty()) && !importing && state.actualConnection is LinkState.Ready
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Over the box, past the + button.
+        QueuedMessages(queued, state, store, Modifier.padding(start = 16.dp + (if (takesFiles) FIELD_HEIGHT + 8.dp else 0.dp), end = 16.dp), steer, remove)
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 16.dp), verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (takesFiles) AddFilesButton(store, draftKey, enabled = true)
+            Column(Modifier.weight(1f).glass(RoundedRectangle(24.dp)).animateContentSize(Motion.layoutSize)) {
+                DraftFiles(files, store, draftKey)
+                ComposerInput(text, placeholder, Trailing.Send, canSend,
+                    field = Modifier.semantics { contentDescription = placeholder }.contentReceiver(fileReceiver(store, draftKey, importing || !takesFiles))) {
+                    send(text.text.toString())
+                    text.clearText()
+                }
+            }
+        }
+    }
+}
+
+/** What is dropped or pasted into a box's field: content files go to draft [draftKey]; nothing is taken while [busy]. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable private fun fileReceiver(store: AppStore, draftKey: String, busy: Boolean) = remember(draftKey, busy) { ReceiveContentListener { content ->
+    if (busy) content else {
+        val uris = mutableListOf<android.net.Uri>()
+        val remaining = content.consume { item -> item.uri?.takeIf { it.scheme == "content" }?.let { uris.add(it); true } ?: false }
+        if (uris.isNotEmpty()) store.importFiles(uris) { store.addDraftFiles(draftKey, it) }
+        remaining
+    }
+} }
+
+/** A box's glass +: photos, files, or the files the clipboard holds, added to draft [draftKey]. */
+@Composable private fun AddFilesButton(store: AppStore, draftKey: String, enabled: Boolean) {
+    val clipboard = LocalClipboard.current
+    val clips = LocalContext.current.getSystemService(ClipboardManager::class.java)
+    val scope = rememberCoroutineScope()
+    val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
+        if (uris.isNotEmpty()) store.importFiles(uris) { store.addDraftFiles(draftKey, it) }
+    }
+    val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) store.importFiles(uris) { store.addDraftFiles(draftKey, it) }
+    }
+    DropdownMenu({ buildList {
+        add(MenuItem("Photos", icon = "photo.on.rectangle") { photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
+        add(MenuItem("Files", icon = "folder") { documents.launch(arrayOf("*/*")) })
+        // Only the clip's description: reading the clip itself would show Android's paste notice.
+        if (clipOffersFiles(clips.primaryClipDescription?.mimeTypes().orEmpty())) add(MenuItem("Paste", icon = "doc.on.clipboard") { scope.launch {
+            val data = clipboard.getClipEntry()?.clipData
+            val uris = if (data == null) emptyList() else (0 until data.itemCount).mapNotNull { data.getItemAt(it).uri?.takeIf { uri -> uri.scheme == "content" } }
+            if (uris.isNotEmpty()) store.importFiles(uris) { store.addDraftFiles(draftKey, it) }
+        } })
+    } }, Modifier.size(FIELD_HEIGHT).glass(Capsule()), enabled = enabled, label = "Add files") {
+        Symbol("plus", size = 26.dp, tint = Palette.text)
+    }
+}
+
+/** The files of draft [draftKey] above its field, each with its remove button. */
+@Composable private fun DraftFiles(files: List<OutgoingFile>, store: AppStore, draftKey: String) {
+    if (files.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 10.dp, end = 10.dp, top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (file in files) ComposerAttachment(file) { store.removeDraftFile(draftKey, file) }
+    }
+}
+
+/**
+ * A composer's text and its one [trailing] button, which runs [act]. [field]: what the text takes besides typing (focus,
+ * pasted files); [accessory]: what stands before the button (the microphone).
+ */
+@Composable private fun ComposerInput(text: TextFieldState, placeholder: String, trailing: Trailing, canSend: Boolean, enabled: Boolean = true,
+    field: Modifier = Modifier, accessory: @Composable () -> Unit = {}, act: () -> Unit) {
+    Row(Modifier.padding(start = 18.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // A hardware keyboard's Enter is a new line; Ctrl/Meta+Enter (⌘↩ on iOS) sends, and never stops or calls.
+        val sendKey = Modifier.onPreviewKeyEvent { e ->
+            val ctrlEnter = e.type == KeyEventType.KeyDown && e.key == Key.Enter && (e.isCtrlPressed || e.isMetaPressed)
+            if (ctrlEnter && trailing == Trailing.Send && canSend) act()
+            ctrlEnter
+        }
+        BasicTextField(state = text, enabled = enabled, modifier = Modifier.weight(1f).then(field).then(sendKey).padding(vertical = 10.dp),
+            textStyle = Type.body.copy(color = Palette.text), cursorBrush = SolidColor(Palette.accent),
+            lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 8),
+            decorator = { input -> Box { if (text.text.isEmpty()) Text(placeholder, style = Type.body, color = Palette.tertiary, maxLines = 1, overflow = TextOverflow.Ellipsis); input() } })
+        accessory()
+        TrailingButton(trailing, canSend, Modifier.padding(bottom = 4.dp), act)
     }
 }
 
@@ -285,8 +348,3 @@ internal fun clipOffersFiles(mimeTypes: List<String>): Boolean =
 
 private fun ClipDescription.mimeTypes(): List<String> = (0 until mimeTypeCount).map(::getMimeType)
 
-fun formatBytes(size: Long): String = when {
-    size >= 1024 * 1024 -> "%.1f MB".format(size / (1024.0 * 1024))
-    size >= 1024 -> "%.0f KB".format(size / 1024.0)
-    else -> "$size bytes"
-}

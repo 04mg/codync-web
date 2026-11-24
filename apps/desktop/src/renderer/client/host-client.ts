@@ -1,4 +1,4 @@
-import type { CallError } from '@shared/ipc'
+import type { CallError, RelayAbsence, RelayPresence } from '@shared/ipc'
 import {
   normalizeBot,
   normalizeScreen,
@@ -8,15 +8,19 @@ import {
   type Entry,
   type Hello,
   type PairingRequest,
+  type ReplyQuote,
   type ScreenState,
   type Usage,
 } from '@shared/models'
+import { parseAlert, type HostAlert } from '@shared/alerts'
 import type { Artifact, ArtifactChunk, LibraryItem } from '@shared/artifacts'
 import { parseCallCue, type CallCue } from '@shared/calls'
 import type { NetworkView } from '@shared/network'
+import { fromOldAnswer, fromOldEvent, toHost } from '@shared/old-host'
+import { parseThreadEntry } from '@shared/threads'
 import { trNow } from '../lib/l10n.ts'
 
-/** How a client reaches a host API: loopback (this computer's host or an SSH tunnel), or the end-to-end encrypted channel directly or through the relay (the web client). */
+/** How a client reaches a host API: loopback (the computer's own host or an SSH tunnel), the end-to-end encrypted channel directly or through the relay (the web client), or the relay (a cloud computer). */
 export type HostRoute = 'loopback' | 'direct' | 'relay'
 
 export class HostError extends Error {
@@ -25,6 +29,9 @@ export class HostError extends Error {
     message: string,
     /** The relay says the computer is offline (last seen, ms). */
     readonly offline: { lastSeen: number | null } | null = null,
+    /** The computer isn't connected to the relay (`RelayPresence`): asleep (the connection wakes a cloud computer) or
+     * off, or a cloud computer the relay is waking. */
+    readonly presence: RelayAbsence | null = null,
   ) {
     super(message)
   }
@@ -40,18 +47,22 @@ export class HostError extends Error {
 }
 
 export interface HostTransport {
+  /** How it reaches the host, shown in the chat header. */
+  readonly route?: HostRoute
   call(method: string, body: unknown, timeoutMs: number): Promise<unknown>
   /** Each element is one event's JSON (what SSE puts after `data:`). */
   stream(path: string, onData: (line: string) => void, onEnd: (error: HostError | null) => void): () => void
-  /** The route the link is up on; loopback when absent. */
-  route?(): HostRoute | null
   /** The relay can keep a message for this offline computer (the mailbox, spec §6.4). */
   canQueue?(): boolean
   /** Leaves a `send` in the relay's mailbox; the computer picks it up when it's back. */
   queueSend?(body: { botId: string; text: string; clientNonce: string }): Promise<void>
+  /** Each presence the relay tells of the computer, through the relay only. */
+  onPresence?(cb: (presence: RelayPresence) => void): () => void
 }
 
 export class LoopbackTransport implements HostTransport {
+  readonly route = 'loopback'
+
   constructor(
     readonly baseURL: string,
     private token: string,
@@ -73,13 +84,45 @@ export class LoopbackTransport implements HostTransport {
   }
 }
 
+/** An account computer through the relay's encrypted channel, which the main process keeps (`main/channel`). */
+export class ChannelTransport implements HostTransport {
+  readonly route = 'relay'
+
+  constructor(
+    readonly computerId: string,
+    private signKey: string,
+  ) {}
+
+  async call(method: string, body: unknown, timeoutMs: number) {
+    try {
+      return await window.codync.channel.call(this.computerId, this.signKey, method, body, timeoutMs)
+    } catch (e) {
+      throw channelError(e as CallError)
+    }
+  }
+
+  stream(path: string, onData: (line: string) => void, onEnd: (error: HostError | null) => void) {
+    return window.codync.channel.stream(this.computerId, this.signKey, path, onData, (error) => onEnd(error ? channelError(error) : null))
+  }
+
+  onPresence(cb: (presence: RelayPresence) => void) {
+    return window.codync.channel.onPresence((p) => p.computerId === this.computerId && cb(p.presence))
+  }
+}
+
+const channelError = (e: CallError) => new HostError(e.status ?? 0, e.message, null, e.presence ?? null)
+
 export type HostEvent =
   | { type: 'icons'; iconsRevision: number; icons: import('@shared/custom-icons').CustomIcons }
-  /** `network` is null from hosts before the network view. */
-  | { type: 'hello'; hostId: string; rev: number; usage: Usage; screen: ScreenState | null; network: NetworkView | null; icons?: import('@shared/custom-icons').CustomIcons }
+  /** `network` is null from hosts before the network view. `catchUp` events follow before the live ones (null from hosts before 2.32.0). */
+  | { type: 'hello'; hostId: string; rev: number; usage: Usage; screen: ScreenState | null; network: NetworkView | null; icons?: import('@shared/custom-icons').CustomIcons; catchUp: number | null }
   | { type: 'bot'; bot: Bot }
+  /** Live only: a bot is done, needs you or failed (never replayed in a catch-up). */
+  | { type: 'alert'; alert: HostAlert }
   | { type: 'botDeleted'; id: string; rev: number }
   | { type: 'entry'; entry: Entry }
+  /** One entry of a thread's transcript (never a chat's); the catch-up has none. */
+  | { type: 'threadEntry'; thread: string; entry: Entry }
   | { type: 'usage'; usage: Usage }
   /** An artifact was published, updated or renamed (the catch-up replays it too). */
   | { type: 'artifact'; artifact: Artifact }
@@ -87,18 +130,25 @@ export type HostEvent =
   | { type: 'accessRequests'; requests: AccessRequest[] }
   | { type: 'pairingRequests'; requests: PairingRequest[] }
   | { type: 'cloud'; cloud: CloudStatus }
+  /** The computer took a new name (a cloud computer renamed from any device): its `hello` says it from now on. */
+  | { type: 'name'; name: string }
+  /** The computer's automatic bot order was switched (from any device): its `hello` says it from now on. */
+  | { type: 'autoOrder'; enabled: boolean }
   /** This computer's network changed (members, roles, presence, offered bots) or cloud assistants were switched. */
   | { type: 'network'; network: NetworkView }
   /** For the voice of a call in this app (only the computer's own apps receive this computer's calls' cues). */
   | { type: 'call'; cue: CallCue }
   | { type: 'resync' }
+  /** One this app has no use for. */
+  | { type: 'skipped' }
   /** An event this app version couldn't read (host newer/older than the app). */
   | { type: 'undecodable'; kind: string }
 
 export function parseEvent(line: string): HostEvent | null {
   let raw: Record<string, unknown>
   try {
-    raw = JSON.parse(line) as Record<string, unknown>
+    // Hosts before 2.51.0: goes when MIN_HOST reaches 2.51.0.
+    raw = fromOldEvent(JSON.parse(line) as Record<string, unknown>)
   } catch {
     return null
   }
@@ -115,6 +165,7 @@ export function parseEvent(line: string): HostEvent | null {
         screen: normalizeScreen(raw.screen as ScreenState | undefined),
         network: (raw.network as NetworkView | undefined) ?? null,
         icons: raw.icons as import('@shared/custom-icons').CustomIcons | undefined,
+        catchUp: typeof raw.catchUp === 'number' ? raw.catchUp : null,
       }
     case 'bot': {
       const bot = raw.bot as (Bot & { deleted?: boolean }) | undefined
@@ -126,6 +177,10 @@ export function parseEvent(line: string): HostEvent | null {
       const entry = raw.entry as Entry | undefined
       if (!entry || typeof entry.id !== 'string' || typeof entry.botId !== 'string') return { type: 'undecodable', kind: 'entry' }
       return { type, entry: { ...entry, data: entry.data ?? {} } }
+    }
+    case 'threadEntry': {
+      const parsed = parseThreadEntry(raw)
+      return parsed ? { type, ...parsed } : null
     }
     case 'usage':
       return raw.usage ? { type, usage: raw.usage as Usage } : null
@@ -143,11 +198,19 @@ export function parseEvent(line: string): HostEvent | null {
       return { type, requests: (raw.requests as PairingRequest[]) ?? [] }
     case 'cloud':
       return raw.cloud ? { type, cloud: raw.cloud as CloudStatus } : null
+    case 'name':
+      return typeof raw.name === 'string' ? { type, name: raw.name } : null
+    case 'autoOrder':
+      return typeof raw.enabled === 'boolean' ? { type, enabled: raw.enabled } : null
     case 'network':
       return raw.network ? { type, network: raw.network as NetworkView } : null
     case 'call': {
       const cue = parseCallCue(raw)
       return cue ? { type, cue } : null
+    }
+    case 'alert': {
+      const alert = parseAlert(raw.alert)
+      return alert ? { type, alert } : null
     }
     case 'resync':
       return { type }
@@ -174,23 +237,29 @@ export class HostClient {
     return this.call('renameArtifact', { botId, artifactId, title })
   }
 
-  constructor(readonly transport: HostTransport) {}
+  /** `hostVersion`: the host's version, once `hello` said it; a new connection to the same computer starts from the last one's. */
+  constructor(readonly transport: HostTransport, private hostVersion?: string) {}
 
   call<T>(method: string, body: unknown = {}, timeoutMs = 20_000): Promise<T> {
-    return this.transport.call(method, body, timeoutMs) as Promise<T>
+    // Hosts before 2.51.0: goes when MIN_HOST reaches 2.51.0.
+    const [sent, sentBody] = toHost(this.hostVersion, method, body)
+    return this.transport.call(sent, sentBody, timeoutMs).then((answer) => fromOldAnswer(method, answer)) as Promise<T>
   }
 
   /** Catch-up since `since`, then live updates. */
   events(since: number, client: string, onEvent: (e: HostEvent) => void, onEnd: (error: HostError | null) => void) {
     const query = new URLSearchParams({ since: String(since), client })
     return this.transport.stream(`/events?${query}`, (line) => {
-      const event = parseEvent(line)
-      if (event) onEvent(event)
+      // One this app has no use for still counts toward the catch-up `hello` announced.
+      onEvent(parseEvent(line) ?? { type: 'skipped' })
     }, onEnd)
   }
 
   hello() {
-    return this.call<Hello>('hello').then((h) => ({ ...h, backends: h.backends ?? [], screen: normalizeScreen(h.screen) ?? undefined }))
+    return this.call<Hello>('hello').then((h) => {
+      this.hostVersion = h.version
+      return { ...h, backends: h.backends ?? [], screen: normalizeScreen(h.screen) ?? undefined }
+    })
   }
 
   async history(botId: string, beforeSeq: number, limit = 100) {
@@ -202,20 +271,22 @@ export class HostClient {
   }
 
   /** `pasted`: what the user pasted rather than typed, which memory never takes as their own words. `replyTo`: the
-   * chat message this one replies to. */
+   * chat message this one replies to, or the part of it the user selected (`replyPart`). */
   /** `call`: the voice call it was said in (on-device or speech to text). */
-  async send(botId: string, text: string, clientNonce: string, attachments: string[] | null, pasted: string[] = [], replyTo: string | null = null, call: string | null = null) {
-    return (await this.call<{ entry: Entry }>('send', { botId, text, clientNonce, attachments, ...(pasted.length ? { pasted } : {}), ...(replyTo ? { replyTo } : {}), ...(call ? { call } : {}) })).entry
+  async send(botId: string, text: string, clientNonce: string, attachments: string[] | null, pasted: string[] = [], replyTo: ReplyQuote | null = null, call: string | null = null) {
+    const reply = replyTo ? { replyTo: replyTo.id, ...(replyTo.part ? { replyPart: replyTo.text } : {}) } : {}
+    return (await this.call<{ entry: Entry }>('send', { botId, text, clientNonce, attachments, ...(pasted.length ? { pasted } : {}), ...reply, ...(call ? { call } : {}) })).entry
   }
 
   /** Bytes per `upload` call: base64 of it stays well under the channel's 1 MiB message. */
   static uploadChunk = 384 * 1024
 
-  async upload(botId: string, uploadId: string, name: string, data: Uint8Array) {
+  /** One file for a message, in chunks: to `botId`'s chat, or with `taskId` to the thread of that task of the bot's. */
+  async upload(botId: string, uploadId: string, name: string, data: Uint8Array, taskId?: string) {
     let offset = 0
     do {
       const end = Math.min(offset + HostClient.uploadChunk, data.length)
-      await this.call('upload', { botId, uploadId, name, data: toBase64(data.subarray(offset, end)), offset, done: end === data.length }, 60_000)
+      await this.call('upload', { botId, ...(taskId ? { taskId } : {}), uploadId, name, data: toBase64(data.subarray(offset, end)), offset, done: end === data.length }, 60_000)
       offset = end
     } while (offset < data.length)
   }

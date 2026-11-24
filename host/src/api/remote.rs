@@ -35,25 +35,21 @@ pub(super) async fn call(hub: &Arc<Hub>, caller: &Caller, method: &str, b: Value
             let bot_id = str_arg(&b, "botId")?;
             let row = hub.store.bot(bot_id)?.filter(|row| !row.deleted).ok_or_else(|| anyhow!("unknown bot"))?;
             hub.store.add_activity_ticket(str_arg(&b, "ticket")?, bot_id, caller.device_key())?;
-            // Registration can finish after the task does. Send the current state immediately.
-            let state = hub.bot_json(&row);
-            let status = match state["status"].as_str() {
-                Some("working") => BotStatus::Working,
-                Some("needsInput") => BotStatus::NeedsInput,
-                Some("error") => BotStatus::Error,
-                _ => BotStatus::Idle,
-            };
+            // Registration can finish after the task does. Send the current state immediately: the chat's, with
+            // its work in the background.
+            let state =
+                if row.config.is_group() { hub.group_runtime(&row.config) } else { hub.outside_runtime(&row.config) };
             // A send is acknowledged before its actor necessarily starts. An unanswered user
             // message must not end the activity as "done" during that window.
-            let pending = status == BotStatus::Idle
+            let pending = state.status == BotStatus::Idle
                 && hub.store.last_message(bot_id).is_some_and(|message| message.author.is_none());
             if !pending {
                 crate::remote::push::live_activity_update(
                     hub,
                     bot_id,
                     &crate::hub::Runtime {
-                        status,
-                        started_at: state["startedAt"].as_i64(),
+                        status: state.status,
+                        started_at: state.started_at,
                         ..crate::hub::Runtime::default()
                     },
                 );
@@ -164,7 +160,7 @@ async fn pairing(hub: &Arc<Hub>, short_code: bool) -> Result<Value> {
     // A computer in no account connects to the relay for as long as this code lives.
     hub.cloud.relay_wake.notify_one();
     let url = crate::service::pairing_url(&crate::service::PairingQr {
-        name: &crate::service::host_name(),
+        name: &crate::remote::managed::computer_name(&hub.store),
         computer_id: &hub.identity.computer_id(),
         sign_key: &hub.identity.sign_pub_b64(),
         box_key: &hub.identity.box_pub_b64(),

@@ -3,10 +3,10 @@
 use super::run::launch;
 use super::{DevServers, KV_PREFIX, Live, Saved, Status, detected, forget, platform, ports, save};
 use crate::LockExt;
-use crate::agent::process::Process;
 use crate::hub::Hub;
 use crate::store::now_ms;
 use anyhow::Result;
+use codync_agent::process::Process;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,10 +87,10 @@ impl DevServers {
         let mut agents = self.agents.locked();
         agents.retain(|_, agent| agent.acp.strong_count() > 0);
         agents
-            .iter()
-            .filter_map(|(bot, agent)| {
+            .values()
+            .filter_map(|agent| {
                 Some(detected::RunningAgent {
-                    bot: bot.clone(),
+                    bot: agent.bot.clone(),
                     acp: agent.acp.upgrade()?,
                     programs: agent.programs.clone(),
                 })

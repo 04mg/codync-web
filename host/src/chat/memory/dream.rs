@@ -199,7 +199,7 @@ async fn run(hub: &Arc<Hub>, bot_id: &str) -> Result<Ran> {
         return Ok(Ran::Done { more: false });
     };
     // Dreaming never spends the user's last headroom.
-    if crate::usage::near_limit(hub, &cfg.backend) {
+    if crate::usage::near_limit(hub, &cfg) {
         return Ok(Ran::Later);
     }
     let shared = super::shared(&cfg);
@@ -252,7 +252,13 @@ async fn run(hub: &Arc<Hub>, bot_id: &str) -> Result<Ran> {
 /// and the rest waits for the next run.
 fn write(hub: &Hub, cfg: &BotConfig, edits: &Edits) -> Result<bool> {
     let dream = hub.store.memory_write(|c, now, _| dream::begin(c, &cfg.id, now))?;
-    let writer = super::files::Writer { author: Author::Dream, bot: Some(cfg), cause: Cause::Dream, message: None };
+    let writer = super::files::Writer {
+        author: Author::Dream,
+        bot: Some(cfg),
+        cause: Cause::Dream,
+        message: None,
+        session: None,
+    };
     let mut whole = true;
     for edit in &edits.files {
         let layer = edit.bot.as_deref();
@@ -314,7 +320,7 @@ fn within_batch(entries: &[Entry]) -> &[Entry] {
 /// may rephrase or translate: the call's transcript holds what the user said). A call's line gives its transcript,
 /// line by line: the user's lines are their own words, the voice's are context.
 fn messages(e: &Entry) -> Vec<Message> {
-    let clip = |text: &str| crate::agent::acp::truncate(text, MESSAGE_CHARS);
+    let clip = |text: &str| codync_agent::acp::truncate(text, MESSAGE_CHARS);
     let said: Vec<(bool, Vec<String>)> = if e.kind == EntryKind::Notice.as_str() {
         e.data["transcript"]
             .as_array()

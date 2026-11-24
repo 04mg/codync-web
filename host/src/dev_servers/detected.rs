@@ -4,12 +4,12 @@
 use super::ports::{self, Listening, Port};
 use super::{Status, View, platform, report};
 use crate::LockExt;
-use crate::agent::acp::Acp;
-use crate::agent::backends;
-use crate::agent::process::{self, JobProcess, program_name};
 use crate::analytics::Event;
 use crate::hub::Hub;
 use anyhow::{Context, Result, bail};
+use codync_agent::acp::Acp;
+use codync_agent::backends;
+use codync_agent::process::{self, JobProcess, program_name};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -114,11 +114,10 @@ pub async fn stop(hub: &Hub, bot: &str, id: &str) -> Result<bool> {
     let first: u32 = first.parse()?;
     // The last scan can be seconds old and a pid gets reused, so only what's in the agent's tree right now. Read before
     // its row goes: a failed read or a request that goes away leaves it listed. With no agent, its tree ended with it.
-    let agent = hub.dev_servers.agents_running().into_iter().find(|agent| agent.bot == bot);
-    let tree = match agent {
-        Some(agent) => agent_tree(&agent).await.context("couldn't check the agent's processes")?,
-        None => Vec::new(),
-    };
+    let mut tree = Vec::new();
+    for agent in hub.dev_servers.agents_running().iter().filter(|agent| agent.bot == bot) {
+        tree.extend(agent_tree(agent).await.context("couldn't check the agent's processes")?);
+    }
     let server = hub.dev_servers.detected.locked().get_mut(bot).and_then(|servers| {
         let at = servers.iter().position(|server| server.pids[0] == first)?;
         Some(servers.remove(at))
@@ -156,7 +155,8 @@ pub async fn scan(hub: &Hub, agents: &[RunningAgent], listening: &[Listening], m
             };
         }
         if !servers.is_empty() {
-            found.insert(agent.bot.clone(), servers);
+            // A bot's agent and its threads' agents share one list.
+            found.entry(agent.bot.clone()).or_default().extend(servers);
         }
     }
     let (changed, new) = {

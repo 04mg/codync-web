@@ -258,3 +258,67 @@
 .settings-appear {
   animation: fade-in var(--layout) both;
 }
+
+/* Codync Cloud: the commands that make a provider's key, selectable and scrolled sideways, with their copy button. */
+.settings-commands {
+  padding: 8px 6px 8px 12px;
+  border-radius: 12px;
+  background: var(--bubble-user);
+}
+.settings-commands-text {
+  user-select: text;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* One provider's key sheet. */
+.cloud-key-sheet {
+  width: 520px;
+}
+/* A cloud computer's `⋯` menu, and a provider's in New cloud computer. */
+.cloud-machine-menu, .cloud-provider-menu {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-s);
+}
+/* New cloud computer: the providers on their logo tiles, a key, then a name, one step at a time. */
+.cloud-new-sheet {
+  width: 440px;
+}
+/* The whole row picks its provider, the chevron too; its `⋯` stays its own. */
+.cloud-provider-row {
+  position: relative;
+}
+.cloud-provider-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.cloud-provider-pick::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+.cloud-provider-row > .cloud-provider-menu {
+  position: relative;
+  z-index: 1;
+}
+.cloud-provider-tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--field);
+}
+/* A setup step's number, in a column so the sentences line up. */
+.cloud-step-number {
+  flex: none;
+  min-width: 14px;
+}

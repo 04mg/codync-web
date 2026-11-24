@@ -20,9 +20,11 @@ brew install --cask leepokai/codync/codync
 
 Open Codync. The app includes the host and sets it up as a background service the first time it runs. Codync then lives in the menu bar; **Open Codync** opens the chat window.
 
+The first time a bot reaches a device on your network, such as a model server, macOS asks to let Codync find devices on your local network. Allow it, or turn it on later in **System Settings > Privacy & Security > Local Network**.
+
 ### Windows
 
-Download [codync-windows-x64.exe](https://github.com/leepokai/Codync/releases/latest/download/codync-windows-x64.exe) and run it. It installs for your user only, and the host starts each time you sign in to Windows. It asks whether to share usage analytics from this computer ([what's shared](/docs/privacy#usage-analytics)). The installer isn't code-signed yet, so SmartScreen asks you to confirm once: choose **More info**, then **Run anyway**.
+Download [codync-windows-x64.exe](https://github.com/leepokai/Codync/releases/latest/download/codync-windows-x64.exe) and run it. It installs for your user only, and the host starts each time you sign in to Windows. It asks whether to share usage analytics from this computer ([what's shared](/docs/privacy#usage-analytics)). The installer isn't code-signed yet, so SmartScreen asks you to confirm once: choose **More info**, then **Run anyway**. If the window says **The host isn't running**, your antivirus may have stopped it: see [Windows and antivirus](/docs/windows-antivirus).
 
 Codync shows a tray icon. Left-click it to open the chat window, right-click it for the menu. Remote screen isn't available on Windows yet.
 
@@ -45,6 +47,8 @@ The app first offers to sign in with Apple, Google or GitHub. Signed in, it asks
 
 Setup also offers an optional GitHub star. If you skip it, the desktop app invites you once more when you've sent your fifth message from that computer. That invitation has two actions: **Star on GitHub** opens the repository, and **Not now** dismisses it. You can also dismiss it by clicking outside the card or pressing Escape. Opening the repository or dismissing this invitation ends the invitations on that computer.
 
+Once you've sent messages from a computer on 3 different days, the desktop app invites you to support Codync on Ko-fi the next time you open its window, and again at 30 and 90 days. **Support on Ko-fi** opens the page and ends the invitations; **Not now** leaves the next one waiting. It never comes in the same opening as a GitHub star invitation or What's new. The terminal UI shows the same invitation when it starts; Escape closes it. The phone apps don't show it.
+
 The computer menu shows a device icon beside each name, helping you distinguish a laptop, Mac mini, or Linux computer. Connection status appears alongside the name (on a separate secondary line on desktop and Android). Tick or untick computers to choose whose bots the list shows; the menu stays open while you pick, so you can change several at once, and **All computers** shows every one again.
 
 Press **⌘R** on macOS or **Ctrl+R** on Windows and Linux to refresh your computers. A small spinning “Loading…” indicator appears while Codync reconnects and updates the computer list. Repeated presses wait for the current refresh to finish.
@@ -62,24 +66,26 @@ codync-host status
 
 `codync-host install` runs the host as a background service (launchd on macOS, systemd on Linux). Re-run the installer to upgrade. To chat from that machine's terminal, run `codync-host tui`. For servers and cloud VMs, see [Linux servers](/docs/linux-servers).
 
-## 2. Install the iPhone app
+On a Mac, macOS may deny Local Network access to a host installed without the app, so its bots may not reach devices on your local network. Install the app if they need that access.
 
-Get [Codync on the App Store](https://apps.apple.com/app/codync/id6760984418). It's free and needs iOS 26 or later.
+## 2. Install the phone app
 
-Every iPhone release goes through Apple's App Review first, so the App Store version can trail the computer apps. Your computer waits to install an update that needs a newer iPhone app until that version is in the App Store. See [Updates](/docs/updates).
+Get [Codync on the App Store](https://apps.apple.com/app/codync/id6760984418). It's free and needs iOS 26 or later. On Android, get [Codync on Google Play](https://play.google.com/store/apps/details?id=com.pokai.Codync.android): also free, for Android 10 or later.
 
-## 3. Pair your iPhone
+Every iPhone release goes through Apple's App Review first, so the App Store version can trail the computer apps. Your computer waits to install an update that needs a newer phone app until the App Store has the iPhone version and Google Play has the Android version. See [Updates](/docs/updates).
+
+## 3. Pair your phone
 
 Pairing connects your phone to your computer with a QR code. Signing in is optional, with one limit: without an account on both ends, the phone connects only over Wi-Fi or Tailscale. A computer in an account takes only phones of that account. Apple with Hide My Email on one and Google on the other are two different accounts (more in [Remote access](/docs/remote-access#pairing)).
 
 On the computer, show the pairing code:
 
-- **macOS:** click Codync in the menu bar, then **Pair iPhone…**
-- **Windows and Linux:** open the tray menu, then **Pair iPhone…**
-- **Any desktop app:** Settings → Computers, then the **Pair iPhone** button on the computer.
+- **macOS:** click Codync in the menu bar, then **Pair phone…**
+- **Windows and Linux:** open the tray menu, then **Pair phone…**
+- **Any desktop app:** Settings → Computers, then the **Pair phone** button on the computer.
 - **Terminal:** run `codync-host pair`, or press `P` in the terminal UI.
 
-On the iPhone, open Codync and sign in with Apple, Google or GitHub, or choose **Continue without an account**. If your account already has a computer, the first page offers it: tap **Pair a new computer** to set up another one here, or see below to use that one. Tap **Continue**, then scan the code. The iPhone Camera app can scan it too. If you can't scan, copy the pairing link on the computer and paste it into the field under the viewfinder. To pair later, tap the account button at the top left of the Bots tab, then **Scan a computer's code**.
+On the phone, open Codync and sign in with Apple, Google or GitHub, or choose **Continue without an account**. If your account already has a computer, the first page offers it: tap **Pair a new computer** to set up another one here, or see below to use that one. No computer to install Codync on? Signed in, tap **Start a cloud computer** on the first page to run one on your own Boat or InstaBox account instead ([Codync Cloud](/docs/codync-cloud)). Tap **Continue**, then scan the code. The phone's camera app can scan it too. If you can't scan, copy the pairing link on the computer and paste it into the field under the viewfinder. To pair later, tap the account button at the top left of the Bots tab, then **Scan a computer's code**.
 
 The iPhone app has three tabs: **Bots** (your bots and chats), **State** (widgets, Live Activities and usage limits) and **Settings** (this iPhone's own settings). Each computer's settings, such as Extensions, voice chat and push notifications, are in **Manage computers**: tap the connection status at the top of the Bots tab (such as **1 connected**).
 
@@ -106,7 +112,7 @@ Pick an avatar and type a name, then create it. The name is optional: a bot with
 Every bot, your lead bot too, starts with these defaults, which you can change in its settings:
 
 - **Agent:** Claude Code when it can run on the computer, otherwise the first agent Codync knows that can.
-- **Workspace:** a personal folder of its own.
+- **Workspace:** **Own folder**, a folder of its own that Codync keeps versions of (see [Working folders and git](/docs/working-folders#versions-of-a-bots-own-folder)).
 - **Permissions:** the agent's Auto mode, so it asks you only about what it won't decide on its own (Ask me when the agent has no Auto mode).
 - **Notifications:** on.
 - **Connectors and skills:** every one installed on the computer is turned on (connectors only when the computer's credential store is available; see [Linux servers](/docs/linux-servers#limits-on-a-headless-server)).
@@ -148,4 +154,4 @@ routine names, custom tool titles and message contents stay as written.
 
 ## Community and help
 
-Ask questions and share feedback on [Discord](https://discord.gg/KBAX3Qznxh), or join the [community for Codync users in China](/wechat) to exchange tips in Chinese. Scan the WeChat QR code with regular WeChat; you do not need WeCom. If you can't join the WeChat group, scan the Lark QR code with the Lark app instead.
+Ask questions and share feedback on [Discord](https://discord.gg/KBAX3Qznxh) (or the [Telegram group](https://t.me/+e5egWrp5z4BlOWNl) if Discord is blocked where you are), or join the [Feishu group for Codync users in China](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=49eq6f1e-ef72-40d8-aaf9-9864ee289ba3) to exchange tips in Chinese.

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use super::{
-    After, App, COLORS, Editor, FIELDS, Field, Form, GroupField, GroupForm, Overlay, SHAPES, Toggle, cycle,
+    After, App, COLORS, Editor, Field, Form, GroupField, GroupForm, MAX_THREADS, Overlay, SHAPES, Toggle, cycle,
     merge_toggles,
 };
 use crate::tui::manage::Page;
@@ -39,12 +39,19 @@ impl App {
             name: Editor::with(&b.name),
             instructions: Editor::with(&b.description),
             backend: b.backend.clone(),
+            login_profile: b.login_profile.clone(),
             model: Editor::with(b.model.as_deref().unwrap_or_default()),
             model_options: (b.model.clone().unwrap_or_default(), b.model_options.clone()),
             fast: b.fast_mode,
             fallbacks: b.fallbacks.clone(),
             self_fallbacks: b.self_fallbacks,
+            advisor: b.thread_fallbacks.is_some(),
+            thread_agent: b.thread_agent.clone(),
+            thread_fallbacks: b.thread_fallbacks.clone().unwrap_or_default(),
             cwd: if b.managed_workspace { String::new() } else { b.cwd.clone() },
+            max_threads: b.max_threads,
+            // A bot's own folder keeps all its work in one place: no switch there.
+            thread_worktrees: b.thread_worktrees.filter(|_| b.git_repo && !b.managed_workspace),
             auto: b.auto,
             mode: b.mode.clone(),
             notify: b.notify,
@@ -91,7 +98,7 @@ impl App {
             return None;
         }
         let field = f.current();
-        if field == Field::Fallbacks && self.fallback_key(&mut f, k) {
+        if matches!(field, Field::Fallbacks | Field::ThreadFallbacks) && self.fallback_key(&mut f, k) {
             return Some(Overlay::Form(f));
         }
         match k.code {
@@ -100,11 +107,11 @@ impl App {
                 self.save_form(&mut f);
             }
             KeyCode::Tab | KeyCode::Down => {
-                f.field = (f.field + 1) % FIELDS.len();
+                f.field = self.step_field(&f, 1);
                 f.sub = 0;
             }
             KeyCode::BackTab | KeyCode::Up => {
-                f.field = (f.field + FIELDS.len() - 1) % FIELDS.len();
+                f.field = self.step_field(&f, -1);
                 f.sub = 0;
             }
             KeyCode::Enter
@@ -120,11 +127,16 @@ impl App {
                 self.open_folder(&start);
                 return None;
             }
-            KeyCode::Enter if field == Field::Agent => {
+            // A login profile is added and signed in on the agent's own sheet.
+            KeyCode::Enter if matches!(field, Field::Agent | Field::LoginProfile) => {
                 let backend = f.backend.clone();
                 self.overlays.push(Overlay::Form(f));
                 self.open_agent(&backend, false);
                 return None;
+            }
+            // The bot's own agent again, while it runs on a fallback.
+            KeyCode::Char('b') if field == Field::Agent && self.on_fallback(&f.bot_id) => {
+                self.call("switchBack", json!({"botId": f.bot_id}), After::Nothing);
             }
             KeyCode::Char('i') if field == Field::Skills => {
                 let id = f.skills.get(f.sub).map(|t| t.id.clone());
@@ -142,6 +154,7 @@ impl App {
                     f.model = Editor::with(&m);
                 }
             }
+            KeyCode::Char('c') if field == Field::ThreadAgent => self.cycle_thread_login(&mut f),
             KeyCode::Char(c) if field == Field::Compaction && c.is_ascii_digit() => f.type_compaction(Some(c)),
             KeyCode::Backspace if field == Field::Compaction => f.type_compaction(None),
             KeyCode::Enter => self.save_form(&mut f),
@@ -149,8 +162,13 @@ impl App {
                 if matches!(
                     field,
                     Field::Agent
+                        | Field::LoginProfile
                         | Field::Fast
                         | Field::SelfFallbacks
+                        | Field::Advisor
+                        | Field::ThreadAgent
+                        | Field::MaxThreads
+                        | Field::ThreadWorktrees
                         | Field::Approvals
                         | Field::Compaction
                         | Field::Notify
@@ -173,18 +191,32 @@ impl App {
                         if !ids.is_empty() {
                             let i = ids.iter().position(|x| *x == f.backend).unwrap_or(0);
                             f.backend.clone_from(&ids[cycle(i, d, ids.len())]);
-                            // Another agent's model ids mean nothing here, and it can't be its own fallback.
+                            // Another agent's model ids mean nothing here, and a login is in the chain once.
                             f.model.clear();
                             f.model_options = Default::default();
+                            f.login_profile = None;
                             let own = f.backend.clone();
-                            f.fallbacks.retain(|x| x.backend != own);
+                            f.fallbacks.retain(|x| x.backend != own || x.login_profile.is_some());
                             // Nor its mode ids: a picked mode becomes the new agent's Auto mode (or, without one, asking).
-                            f.mode = f.mode.take().map(|_| crate::agent::modes::AUTO.to_owned());
+                            f.mode = codync_agent::modes::on_other_agent(f.mode.as_deref());
                             self.want_models(&f.backend);
                         }
                     }
+                    Field::LoginProfile if !space => self.cycle_login_profile(&mut f, d),
                     Field::Fast => f.fast = !f.fast,
                     Field::SelfFallbacks => f.self_fallbacks = !f.self_fallbacks,
+                    Field::Advisor => self.toggle_advisor(&mut f),
+                    Field::ThreadAgent if space => {
+                        if let Some(agent) = f.thread_agent.as_mut() {
+                            self.cycle_step_model(agent);
+                        }
+                    }
+                    Field::ThreadAgent => self.cycle_thread_agent(&mut f, d),
+                    Field::ThreadWorktrees => f.thread_worktrees = f.thread_worktrees.map(|on| !on),
+                    Field::MaxThreads if !space => {
+                        let step = |n: u8| if d < 0 { n.saturating_sub(1) } else { n + 1 };
+                        f.max_threads = f.max_threads.map(|n| step(n).clamp(1, MAX_THREADS));
+                    }
                     Field::Approvals => self.cycle_approval(&mut f, d),
                     Field::Compaction => f.cycle_compaction(d),
                     Field::Notify => f.notify = !f.notify,
@@ -258,6 +290,11 @@ impl App {
         self.call("updateBot", body, After::Saved);
     }
 
+    /// Whether bot `id` runs on a fallback now.
+    pub(in crate::tui) fn on_fallback(&self, id: &str) -> bool {
+        self.bots.get(id).is_some_and(|b| b.agent_step.is_some())
+    }
+
     /// Agents a bot can switch to: runnable ones on this computer first.
     pub(super) fn agent_choices(&self) -> Vec<String> {
         let mut v: Vec<&Value> = self
@@ -274,11 +311,14 @@ impl Form {
     /// The bot as this form would save it.
     fn body(&self) -> Value {
         let model = self.model.text.trim();
-        json!({
+        let mut body = json!({
             "name": self.name.text.trim(),
             "description": self.instructions.text.trim(),
             "backend": self.backend,
+            "loginProfile": self.login_profile,
             "cwd": self.cwd,
+            "maxThreads": self.max_threads,
+            "threadWorktrees": self.thread_worktrees,
             "permission": if self.auto { "auto" } else { "ask" },
             "mode": self.mode,
             "model": if model.is_empty() { Value::Null } else { model.into() },
@@ -299,7 +339,13 @@ impl Form {
             "avatarShape": SHAPES[self.shape],
             "connectors": self.connectors.iter().filter(|t| t.on).map(|t| t.id.clone()).collect::<Vec<_>>(),
             "skills": self.skills.iter().filter(|t| t.on).map(|t| t.id.clone()).collect::<Vec<_>>(),
-        })
+        });
+        // Only to a host that has Advisor mode.
+        if self.advisor {
+            body["threadAgent"] = json!(self.thread_agent);
+            body["threadFallbacks"] = json!(self.thread_fallbacks);
+        }
+        body
     }
 
     /// When Codync summarizes the chat, in the order ← → steps through: the three choices, then the sizes a menu lists.
@@ -357,7 +403,7 @@ impl Form {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{AgentModel, Bot, test_app};
+    use super::super::{AgentModel, Bot, FIELDS, test_app};
     use super::*;
 
     #[tokio::test]
@@ -468,6 +514,91 @@ mod tests {
         assert_eq!(f.changes(), json!({"compaction": 260_000}), "held to the largest size the window takes");
         let f = press(&mut app, f, [KeyCode::Backspace; 3].into_iter().chain("155".chars().map(KeyCode::Char)));
         assert_eq!(f.changes(), json!({"compaction": 160_000}), "to the nearest 10K");
+    }
+
+    #[tokio::test]
+    async fn threads_at_once_steps_from_one_to_six_on_a_host_that_has_the_box() {
+        let mut app = test_app();
+        let at = FIELDS.iter().position(|x| *x == Field::MaxThreads).expect("a threads field");
+        let bot = json!({"id": "b", "name": "B", "backend": "claude", "maxThreads": 5});
+        app.bots.insert("b".into(), Bot::parse(&bot).expect("a bot"));
+        app.selected = Some("b".into());
+        app.edit_bot();
+        let Some(Overlay::Form(mut f)) = app.overlays.pop() else { panic!("the editor opens") };
+        assert!(app.field_shown(&f, Field::MaxThreads));
+        f.field = at;
+        let f = press(&mut app, f, [KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+        assert_eq!(f.changes(), json!({"maxThreads": 6}), "six at most");
+        let f = press(&mut app, f, [KeyCode::Left; 9]);
+        assert_eq!(f.changes(), json!({"maxThreads": 1}), "one at least");
+
+        // A host from before the box: no field to step to, and nothing sent.
+        let old = json!({"id": "o", "name": "Old", "backend": "claude"});
+        app.bots.insert("o".into(), Bot::parse(&old).expect("a bot"));
+        app.selected = Some("o".into());
+        app.edit_bot();
+        let Some(Overlay::Form(mut f)) = app.overlays.pop() else { panic!("the editor opens") };
+        f.field = at - 1;
+        let f = press(&mut app, f, [KeyCode::Tab]);
+        assert_eq!(f.field, at + 2, "past the fields it doesn't have: this one and Worktree per thread");
+        let f = press(&mut app, f, [KeyCode::BackTab]);
+        assert_eq!((f.field, f.changes()), (at - 1, json!({})));
+    }
+
+    #[tokio::test]
+    async fn worktree_per_thread_shows_only_for_a_project_in_a_git_repository_on_a_host_that_has_it() {
+        let mut app = test_app();
+        let at = FIELDS.iter().position(|x| *x == Field::ThreadWorktrees).expect("a worktrees field");
+        let mut editor = |id: &str, more: Value| {
+            let mut bot = json!({"id": id, "name": "B", "backend": "claude", "maxThreads": 3});
+            bot.as_object_mut().expect("an object").extend(more.as_object().cloned().unwrap_or_default());
+            app.bots.insert(id.into(), Bot::parse(&bot).expect("a bot"));
+            app.selected = Some(id.into());
+            app.edit_bot();
+            let Some(Overlay::Form(mut f)) = app.overlays.pop() else { panic!("the editor opens") };
+            let shown = app.field_shown(&f, Field::ThreadWorktrees);
+            f.field = at;
+            (shown, press(&mut app, f, [KeyCode::Right]).changes())
+        };
+        assert_eq!(
+            editor("a", json!({"gitRepo": true, "threadWorktrees": true})),
+            (true, json!({"threadWorktrees": false}))
+        );
+        assert_eq!(
+            editor("b", json!({"gitRepo": true, "threadWorktrees": false})),
+            (true, json!({"threadWorktrees": true}))
+        );
+        assert_eq!(
+            editor("c", json!({"gitRepo": false, "threadWorktrees": true})),
+            (false, json!({})),
+            "no repository"
+        );
+        assert_eq!(editor("d", json!({"gitRepo": true})), (false, json!({})), "a host before worktrees");
+        assert_eq!(
+            editor("e", json!({"gitRepo": true, "threadWorktrees": true, "managedWorkspace": true})),
+            (false, json!({})),
+            "the bot's own folder"
+        );
+    }
+
+    #[test]
+    fn the_line_under_the_folder_says_which_of_the_three_it_is() {
+        let line = |more: Value| {
+            let mut bot = json!({"id": "a", "name": "B", "backend": "claude"});
+            bot.as_object_mut().expect("an object").extend(more.as_object().cloned().unwrap_or_default());
+            Bot::parse(&bot).expect("a bot").git_line()
+        };
+        let on = json!({"threadWorktrees": true, "gitRepo": true});
+        assert_eq!(line(on), Some("Git repository"), "a host that doesn't say has git");
+        assert_eq!(
+            line(json!({"threadWorktrees": true, "gitRepo": false, "gitInstalled": true})),
+            Some("Not a git repository")
+        );
+        assert_eq!(
+            line(json!({"threadWorktrees": true, "gitRepo": true, "gitInstalled": false})),
+            Some("Git isn't installed on this computer")
+        );
+        assert_eq!(line(json!({"gitRepo": true})), None, "a host before worktrees");
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-# A bot's Summarize long chats setting on the phones, in the Agent card of its details: once its agent has replied and
+# A bot's Summarize long chats setting on the phones, in the Agent card of its settings: once its agent has replied and
 # told its window, the menu has the three choices (Auto, the default, first) and Set a size, which lists sizes by 100K
 # up to what the window holds and Custom size… for one typed in; a size picked or typed shows on the pill and the host
 # keeps it, and so does a choice, which reopened details show again. The phone must already be signed in and paired with the host (a worktree's sandbox,
@@ -36,15 +36,16 @@ onFlowComplete:
 - extendedWaitUntil:
     visible: "ok"
     timeout: 20000
-# Not on the Settings page: on the Details page, where the details open.
+# Not on the Details page, where the details open (what the bot does): on the Settings page, under Agent.
 - tapOn: "${output.bot.name}, view details"
-- tapOn: "Settings"
 - assertNotVisible: "Summarize long chats"
-- tapOn: "Details"
+- tapOn: "Settings"
 # Centered, so the pill under the label is on screen too (on Android the label alone can stop at the bottom edge).
 - scrollUntilVisible:
     element: "Summarize long chats"
     centerElement: true
+# The page can still be moving: a pill tapped where it was a moment ago never opens.
+- waitForAnimationToEnd
 - tapOn: "Auto \\(default\\)"
 - assertVisible: "Early"
 - assertVisible: "Near the limit"
@@ -63,6 +64,16 @@ onFlowComplete:
 - eraseText
 # Rounded to the nearest 10K.
 - inputText: "354"
+# Maestro's typing hides the iPhone keyboard for about a second; coming back, it lifts the dialog, so Save is tapped
+# once it's back, not where it was before.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "delete"
+          timeout: 5000
 - tapOn: "Save"
 - assertVisible: "350K"
 - takeScreenshot: compaction-size
@@ -80,10 +91,11 @@ onFlowComplete:
 # Reopened, the details read the choice back from the host.
 - tapOn: "Close details"
 - tapOn: "${output.bot.name}, view details"
-- tapOn: "Details"
+- tapOn: "Settings"
 - scrollUntilVisible:
     element: "Summarize long chats"
     centerElement: true
+- waitForAnimationToEnd
 - tapOn: "Early"
 - tapOn: "Auto \\(default\\)"
 - assertVisible: "Auto \\(default\\)"

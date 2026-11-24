@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use super::super::manage::{
-    AgentSetup, AnalyticsSheet, BotChatSheet, DevServersSheet, Fields, Gear, Library, Market, MemorySheet,
-    NetworkSheet, RoutineForm, RoutineList, SkillSheet,
+    AgentSetup, AllWork, AnalyticsSheet, BotChatSheet, CutIn, DetailsPage, DevServersSheet, Fields, Gear, KeyImport,
+    Library, Market, MemorySheet, NetworkSheet, RoutineForm, SkillSheet, ThreadSheet,
 };
-use super::{Editor, Mark};
+use super::{Editor, KofiSheet, Mark, WhatsNew};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -53,6 +53,7 @@ pub enum Action {
     Memory,
     Details,
     Library,
+    NewSession,
     RefreshAgents,
     Pair,
     Network,
@@ -60,26 +61,33 @@ pub enum Action {
     CheckUpdate,
     Analytics,
     AboutAnalytics,
+    AutoOrder,
+    ComputerName,
+    ResetCredentials,
     Language,
     ThinkingDetails,
     Keys,
     Appearance(super::super::appearance::Appearance),
 }
 
-pub const ACTIONS: [(&str, &str, Action); 19] = [
+pub const ACTIONS: [(&str, &str, Action); 23] = [
     ("New bot…", "n", Action::NewBot),
     ("New group chat…", "m", Action::NewGroup),
     ("Extensions: agents, connectors, skills…", "A", Action::Market),
     ("Memory of this bot…", "M", Action::Memory),
     ("Details of this bot…", "R", Action::Details),
     ("Library of this bot: artifacts and files…", "L", Action::Library),
+    ("New session for this bot…", "", Action::NewSession),
     ("Refresh agents", "", Action::RefreshAgents),
-    ("Pair a phone…", "P", Action::Pair),
+    ("Move active bots to the top", "", Action::AutoOrder),
+    ("Computer name", "", Action::ComputerName),
+    ("Pair phone…", "P", Action::Pair),
     ("Network: your other computers…", "N", Action::Network),
     ("Usage", "U", Action::Usage),
     ("Check for updates", "", Action::CheckUpdate),
     ("Share usage analytics", "", Action::Analytics),
     ("About usage analytics…", "", Action::AboutAnalytics),
+    ("Reset saved credentials…", "", Action::ResetCredentials),
     ("Appearance: System", "", Action::Appearance(super::super::appearance::Appearance::System)),
     ("Appearance: Light", "", Action::Appearance(super::super::appearance::Appearance::Light)),
     ("Appearance: Dark", "", Action::Appearance(super::super::appearance::Appearance::Dark)),
@@ -103,12 +111,22 @@ pub struct Goto {
 
 pub enum ConfirmAct {
     Delete(String),
+    NewSession(String),
     /// Keeps a bot's harness's own memory on beside Codync's.
     KeepHarnessMemory(String),
     DeleteRoutine(String, String),
     RotateRoutineKey(String, String),
     RemoveConnector(String),
     RemoveSkill(String),
+    /// Asks again before deleting every credential saved on this computer: it's dangerous and final.
+    ResetCredentials,
+    /// Deletes them (`resetCredentials`).
+    DeleteCredentials,
+    /// Stops one task of a bot's box.
+    StopWork {
+        bot: String,
+        task: String,
+    },
 }
 
 pub struct Confirm {
@@ -172,12 +190,24 @@ pub enum Field {
     Name,
     Instructions,
     Agent,
+    /// Which of the agent's logins the bot runs on; only for an agent that can have login profiles.
+    LoginProfile,
     Model,
     ModelOptions,
     Fast,
     Fallbacks,
     SelfFallbacks,
+    /// Advisor mode: the bot's threads run on an agent of their own; only on a host that has it.
+    Advisor,
+    /// In Advisor mode, the agent its threads run on.
+    ThreadAgent,
+    /// In Advisor mode, the threads' fallbacks.
+    ThreadFallbacks,
     Folder,
+    /// The most threads it runs at once; only on a host that sends `maxThreads`.
+    MaxThreads,
+    /// A worktree per thread; only for a bot in a git repository, on a host that sends `threadWorktrees`.
+    ThreadWorktrees,
     Approvals,
     Compaction,
     Notify,
@@ -191,17 +221,23 @@ pub enum Field {
     Skills,
 }
 
-pub const FIELDS: [Field; 20] = [
+pub const FIELDS: [Field; 26] = [
     Field::Name,
     Field::Instructions,
     Field::Agent,
+    Field::LoginProfile,
     Field::Model,
     Field::ModelOptions,
     Field::Fast,
     Field::Fallbacks,
     Field::SelfFallbacks,
+    Field::Advisor,
+    Field::ThreadAgent,
+    Field::ThreadFallbacks,
     Field::Compaction,
     Field::Folder,
+    Field::MaxThreads,
+    Field::ThreadWorktrees,
     Field::Approvals,
     Field::Notify,
     Field::Computer,
@@ -226,6 +262,8 @@ pub struct Form {
     pub name: Editor,
     pub instructions: Editor,
     pub backend: String,
+    /// The login profile it runs on; `None`: the computer's own sign-in.
+    pub login_profile: Option<String>,
     pub model: Editor,
     /// Model settings (effort, fast…) and the model they were picked for.
     pub model_options: (String, BTreeMap<String, String>),
@@ -233,8 +271,17 @@ pub struct Form {
     /// Agents that carry on, in order, when the bot's own can't answer.
     pub fallbacks: Vec<crate::store::Fallback>,
     pub self_fallbacks: bool,
+    /// The host has Advisor mode.
+    pub advisor: bool,
+    /// In Advisor mode, the agent the threads run on; `None`: off.
+    pub thread_agent: Option<crate::store::Fallback>,
+    pub thread_fallbacks: Vec<crate::store::Fallback>,
     pub cwd: String,
-    /// Approvals: Codync approves what still asks, and the agent mode (`agent::modes`).
+    /// The most threads it runs at once; `None`: the host has no event box.
+    pub max_threads: Option<u8>,
+    /// A worktree per thread; `None`: the host has no worktrees, or the bot's folder is in no git repository.
+    pub thread_worktrees: Option<bool>,
+    /// Approvals: Codync approves what still asks, and the agent mode (`codync_agent::modes`).
     pub auto: bool,
     pub mode: Option<String>,
     pub notify: bool,
@@ -350,18 +397,30 @@ pub enum Overlay {
     Memory(MemorySheet),
     /// A read-only conversation between two bots.
     BotChat(BotChatSheet),
+    /// The transcript of the thread working a task, read-only.
+    Thread(ThreadSheet),
+    /// Which working task gives way to the one that cuts in.
+    CutIn(CutIn),
+    /// Every bot's work on one page.
+    AllWork(AllWork),
     /// A bot's dev servers.
     DevServers(DevServersSheet),
-    Routines(RoutineList),
+    Details(DetailsPage),
     Routine(Box<RoutineForm>),
+    /// A bot's Computer page, by the bot's id.
+    Computer(String),
     Library(Library),
     Gear(Gear),
     Market(Box<Market>),
     Agent(AgentSetup),
     Fields(Box<Fields>),
+    /// The login shell's variables an API key login profile can import, over its key form.
+    KeyImport(KeyImport),
     Skill(SkillSheet),
     Analytics(AnalyticsSheet),
     Network(Box<NetworkSheet>),
+    WhatsNew(WhatsNew),
+    Kofi(KofiSheet),
 }
 
 pub struct Toast {

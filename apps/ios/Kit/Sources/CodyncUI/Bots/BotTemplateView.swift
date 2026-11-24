@@ -15,9 +15,12 @@ struct BotTemplateView: View {
         template.hidden = nil
         template.fallbacks = nil
         template.selfFallbacks = nil
-        // Who reaches a bot belongs to its computer, not its setup.
+        template.threadAgent = nil
+        template.threadFallbacks = nil
+        // Who reaches a bot and the login profile it runs on belong to its computer, not its setup.
         template.offeredToNetwork = nil
         template.reachableByAssistants = nil
+        template.loginProfile = nil
         self.template = template
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

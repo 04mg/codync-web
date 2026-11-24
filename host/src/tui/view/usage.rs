@@ -15,19 +15,55 @@ use super::time::{DAYS, MONTHS, clock, local, month_day, now_ms};
 /// One line of the sheet's list.
 enum Line<'a> {
     Provider(&'a str),
+    /// A login of an agent that has several, by what it's called: the default login may have no name.
+    Login(Option<&'a str>),
     Window(&'a Value),
+    /// A quiet line under a login: **No reading yet**, or **Out of date** when its last check failed.
+    Note(&'static str),
     Gap,
 }
 
-/// Each provider's name, its windows and a gap.
+/// Each provider's name, its windows and a gap. One with login profiles lists each login's windows under its name,
+/// the default login first.
 fn lines(providers: &[Value]) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
     for p in providers {
         lines.push(Line::Provider(p["name"].as_str().unwrap_or_default()));
-        lines.extend(p["windows"].as_array().into_iter().flatten().map(Line::Window));
+        match p["loginProfiles"].as_array().filter(|profiles| !profiles.is_empty()) {
+            None => login(&mut lines, p),
+            Some(profiles) => {
+                let named = profiles.iter().map(|l| (l["name"].as_str(), l));
+                for (name, l) in std::iter::once((p["defaultLoginProfile"].as_str(), p)).chain(named) {
+                    lines.push(Line::Login(name));
+                    login(&mut lines, l);
+                    if windows(l).is_empty() {
+                        lines.push(Line::Note("No reading yet"));
+                    }
+                }
+            }
+        }
         lines.push(Line::Gap);
     }
     lines
+}
+
+/// A login's windows, marked **Out of date** when its last check failed (`failedAt`).
+fn login<'a>(lines: &mut Vec<Line<'a>>, login: &'a Value) {
+    let windows = windows(login);
+    lines.extend(windows.iter().map(Line::Window));
+    if !windows.is_empty() && login["failedAt"].is_i64() {
+        lines.push(Line::Note("Out of date"));
+    }
+}
+
+fn windows(of: &Value) -> &[Value] {
+    of["windows"].as_array().map_or(&[], Vec::as_slice)
+}
+
+/// One of the agent's logins has windows: listed only for its login profiles, it has none yet.
+fn has_reading(provider: &Value) -> bool {
+    let profiles = provider["loginProfiles"].as_array().into_iter().flatten();
+    std::iter::once(provider).chain(profiles).any(|login| !windows(login).is_empty())
 }
 
 /// The sheet on a screen `area`, and how many list lines fit in it.
@@ -66,7 +102,14 @@ pub(super) fn usage(buf: &mut Buffer, area: Rect, app: &App, scroll: usize) {
             Line::Provider(name) => {
                 put(buf, inner.x, y, inner.width, name, t.bold.patch(t.panel));
             }
+            Line::Login(name) => {
+                let name = name.map_or_else(|| tr("Default login profile"), std::borrow::Cow::Borrowed);
+                put(buf, inner.x + 1, y, inner.width.saturating_sub(1), name.as_ref(), t.secondary.patch(t.panel));
+            }
             Line::Window(win) => window(buf, inner, y, win),
+            Line::Note(note) => {
+                put(buf, inner.x + 2, y, inner.width.saturating_sub(2), tr(note).as_ref(), t.dim.patch(t.panel));
+            }
             Line::Gap => {}
         }
     }
@@ -89,7 +132,7 @@ pub(super) fn usage_chooser(buf: &mut Buffer, area: Rect, app: &App, row: usize)
         let shown = service["shown"].as_bool() == Some(true);
         let cursor = i + skip == row;
         let style = if cursor { t.bold } else { t.text }.patch(t.panel);
-        let unread = shown && !providers.iter().any(|p| p["id"] == service["id"]);
+        let unread = shown && !providers.iter().any(|p| p["id"] == service["id"] && has_reading(p));
         let name = service["name"].as_str().unwrap_or_default();
         let line = format!("{} [{}] {name}", if cursor { "›" } else { " " }, if shown { "x" } else { " " });
         let end = put(buf, inner.x, y, inner.width, &line, style);
@@ -192,6 +235,47 @@ mod tests {
         assert!(text.contains("  [x] Claude"), "{text}");
         assert!(text.contains("[x] Google Antigravity  No reading yet"), "{text}");
         assert!(text.contains("› [ ] Cursor"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_login_profiles_lists_each_login_with_its_own_limits() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Client::new("http://127.0.0.1:1", None), tx, String::new());
+        app.usage = json!({"providers": [{
+            "id": "claude", "name": "Claude", "windows": [{"label": "Weekly", "percent": 10}],
+            "loginProfiles": [
+                {"id": "a", "name": "Work", "windows": [{"label": "Weekly", "percent": 90}]},
+                {"id": "b", "name": "Side", "windows": []},
+            ],
+        }]});
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        super::usage(&mut buf, area, &app, 0);
+        let text: String = buf.content().iter().map(ratatui::buffer::Cell::symbol).collect();
+        let at = |what: &str| text.find(what).unwrap_or_else(|| panic!("{what} in {text}"));
+        assert!(at("Default login profile") < at("10% used") && at("10% used") < at("Work"), "{text}");
+        assert!(at("Work") < at("90% used") && at("90% used") < at("Side") && at("Side") < at("No reading yet"));
+        assert!(!text.contains("Out of date"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_login_whose_check_failed_is_marked_out_of_date() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Client::new("http://127.0.0.1:1", None), tx, String::new());
+        app.usage = json!({"providers": [
+            {"id": "claude", "name": "Claude", "windows": [{"label": "Weekly", "percent": 10}], "failedAt": 2},
+            {"id": "codex", "name": "Codex", "windows": [{"label": "Weekly", "percent": 20}],
+             "loginProfiles": [{"id": "a", "name": "Work", "windows": [{"label": "Weekly", "percent": 90}], "failedAt": 2}]},
+        ]});
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        super::usage(&mut buf, area, &app, 0);
+        let text: String = buf.content().iter().map(ratatui::buffer::Cell::symbol).collect();
+        let first = text.find("Out of date").unwrap_or_else(|| panic!("{text}"));
+        let last = text.rfind("Out of date").unwrap_or_default();
+        assert!(text.find("10% used") < Some(first) && Some(first) < text.find("Codex"), "{text}");
+        assert!(text.find("20% used") < text.find("Work") && text.find("90% used") < Some(last), "{text}");
+        assert_ne!(first, last, "{text}");
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
@@ -68,7 +69,7 @@ class WorkingIndicatorTest {
         compose.setContent {
             Hosted {
                 list = rememberLazyListState()
-                rememberFollowing(list, "message", 1, working = true, bottom = 0.dp)
+                rememberFollowing(list, "first", "message", 1, working = true, bottom = 0.dp)
                 LazyColumn(Modifier.size(320.dp).testTag("conversation"), state = list, contentPadding = PaddingValues(0.dp)) {
                     items(30) { Box(Modifier.height(48.dp)) { Text("Message $it") } }
                     item("working") { WorkingIndicator(Bot("bot", "Bot", status = "working", activity = activity.value), emptyList(), details = false) }
@@ -97,5 +98,67 @@ class WorkingIndicatorTest {
         compose.mainClock.advanceTimeBy(1000)
         compose.waitForIdle()
         compose.runOnIdle { assertEquals(place, list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset) }
+    }
+
+    /** The keyboard or a taller composer raises the bottom padding: the end stays in view, a reader scrolled up stays put. */
+    @Test fun bottomPaddingKeepsTheEndButNotAReaderScrolledUp() {
+        compose.mainClock.autoAdvance = false
+        val bottom = mutableStateOf(0.dp)
+        lateinit var list: LazyListState
+        compose.setContent {
+            Hosted {
+                list = rememberLazyListState()
+                rememberFollowing(list, "first", "message", 1, working = false, bottom = bottom.value)
+                LazyColumn(Modifier.size(320.dp).testTag("conversation"), state = list, contentPadding = PaddingValues(bottom = bottom.value)) {
+                    items(30) { Box(Modifier.height(48.dp)) { Text("Message $it") } }
+                }
+            }
+        }
+        compose.mainClock.advanceTimeBy(1000)
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertFalse(list.canScrollForward)
+            bottom.value = 300.dp
+        }
+        // One frame: the end is asked for in the composition that reads the new padding, with no glide to wait for.
+        compose.mainClock.advanceTimeByFrame()
+        compose.runOnIdle { assertFalse(list.canScrollForward) }
+        compose.onNodeWithTag("conversation").performTouchInput { swipeDown() }
+        compose.mainClock.advanceTimeBy(1000)
+        compose.waitForIdle()
+        var place = 0 to 0
+        compose.runOnIdle {
+            place = list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset
+            bottom.value = 0.dp
+        }
+        compose.mainClock.advanceTimeBy(1000)
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(place, list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset) }
+    }
+
+    /** Hundreds of rows loaded above at once (an opened chat's window replacing its preview) leave the newest in view. */
+    @Test fun rowsLoadedAboveKeepTheEnd() {
+        compose.mainClock.autoAdvance = false
+        val oldest = mutableStateOf(280)
+        lateinit var list: LazyListState
+        compose.setContent {
+            Hosted {
+                list = rememberLazyListState()
+                rememberFollowing(list, "message ${oldest.value}", "message 299", 1, working = false, bottom = 0.dp)
+                LazyColumn(Modifier.size(320.dp), state = list) {
+                    items((oldest.value until 300).toList(), key = { it }) { Box(Modifier.height(48.dp)) { Text("Message $it") } }
+                }
+            }
+        }
+        compose.mainClock.advanceTimeBy(1000)
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertFalse(list.canScrollForward)
+            oldest.value = 0
+        }
+        compose.mainClock.advanceTimeBy(1000)
+        compose.waitForIdle()
+        compose.runOnIdle { assertFalse(list.canScrollForward) }
+        compose.onNodeWithText("Message 299").assertIsDisplayed()
     }
 }

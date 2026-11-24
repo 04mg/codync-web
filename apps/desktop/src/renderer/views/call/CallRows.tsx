@@ -7,13 +7,14 @@ import { Icon } from '../../components/Icon'
 import { ModalHeader } from '../../components/Overlay'
 import { VStack } from '../../components/Stack'
 import { Text } from '../../components/Text'
+import { copyText } from '../../lib/image-clipboard'
 import { useFetched } from '../../lib/use-fetched'
 import { useTr } from '../../lib/use-language'
 import { useStore } from '../../store/context'
-import { Bubble } from '../thread/ChatRows'
-import { callLength, relativeTime } from '../thread/chat-items'
-import { MarkdownText } from '../thread/Markdown'
-import '../thread/bot-conversation.css'
+import { Bubble } from '../chat/ChatRows'
+import { callLength, relativeTime } from '../chat/chat-items'
+import { MarkdownText } from '../chat/Markdown'
+import '../chat/bot-conversation.css'
 import './call.css'
 
 /** A voice call's line in the chat: its title (written once the call ends) and length; it opens the call. */
@@ -90,7 +91,7 @@ function CallHeader({ botId, line }: { botId: string; line: Entry }) {
 const opensExchange = (message: CallMessage, previous?: CallMessage) => message.speaker === 'user' && previous?.speaker !== 'user'
 
 function CallMessageRow({ message }: { message: CallMessage }) {
-  const copy = () => [{ title: 'Copy', icon: 'square.on.square', action: () => window.codync.app.copy(message.text) }]
+  const copy = () => [{ title: 'Copy', icon: 'square.on.square', action: () => void copyText(message.text) }]
   switch (message.speaker) {
     case 'user':
       return (

@@ -37,8 +37,8 @@ export class ChannelHostTransport implements HostTransport {
     return this.channel.subscribe(sub.kind, sub.body, (ev) => onData(JSON.stringify(ev)), (error) => onEnd(error ? hostError(error) : null))
   }
 
-  route(): HostRoute | null {
-    return this.channel.route
+  get route(): HostRoute | undefined {
+    return this.channel.route ?? undefined
   }
 
   canQueue() {

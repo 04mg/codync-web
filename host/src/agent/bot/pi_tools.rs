@@ -1,11 +1,13 @@
 //! pi-acp takes a session's `mcpServers` and never hands them to pi (its README's "Limitations"), so a bot on pi
 //! had none of Codync's tools. pi-acp starts the command in `PI_ACP_PI_COMMAND`: Codync's launcher, which starts pi
 //! with an extension that registers the servers it finds in `CODYNC_PI_MCP_SERVERS` (`pi.registerMcpServer`, pi
-//! 0.99 or later).
-// ponytail: drop this once pi-acp passes `mcpServers` to pi itself (svkozak/pi-acp#164).
+//! 0.99 or later). The extension also passes on the error pi ended a turn in, which pi-acp drops (see `EXTENSION`).
+// ponytail: drop the MCP registration once pi-acp passes `mcpServers` to pi itself (svkozak/pi-acp#164); the launcher
+// stays while the turn-error hook does.
 
 use super::codex_names::{self, Renamed};
 use anyhow::{Context, Result};
+use codync_agent::acp::{INTERNAL_ERROR, RpcError, StopReason};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -13,7 +15,22 @@ use std::path::{Path, PathBuf};
 /// Older pi has no `registerMcpServer` and starts without the tools. With pi-acp's own bridge (`PI_ACP_MCP_SERVERS`)
 /// pi already has them, and registering them twice would stop pi. A server that can't register (another extension
 /// already has its name) is the only one left out: pi doesn't start when an extension throws.
+///
+/// pi-acp answers a turn whose model request failed with a plain `end_turn` and drops pi's error (#470), so once pi
+/// is done retrying, the extension says the error as a notification (which pi-acp passes on as text) behind
+/// [`TURN_ERROR`], and the host fails the turn with it ([`turn_error`]).
+// ponytail: drop the turn-error hook once pi-acp ends such a turn with an error itself.
 const EXTENSION: &str = r#"export default function (pi) {
+  let last;
+  pi.on("message_end", (event) => {
+    if (event.message?.role === "assistant") last = event.message;
+  });
+  pi.on("agent_settled", (event, ctx) => {
+    if (!event.aborted && last?.stopReason === "error") {
+      ctx.ui.notify("[codync: turn failed] " + (last.errorMessage || "pi's model request failed"), "error");
+    }
+    last = undefined;
+  });
   if (typeof pi.registerMcpServer !== "function" || process.env.PI_ACP_MCP_SERVERS) return;
   const servers = JSON.parse(process.env.CODYNC_PI_MCP_SERVERS || "{}");
   for (const [name, config] of Object.entries(servers)) {
@@ -25,6 +42,35 @@ const EXTENSION: &str = r#"export default function (pi) {
   }
 }
 "#;
+
+/// Leads the notification the extension sends for a turn pi ended in an error.
+const TURN_ERROR: &str = "[codync: turn failed] ";
+
+/// The error reply text carries when it's the extension's notification to pi (pi-acp passes it on with `notice`
+/// `error`), not the reply's words: an agent quoting the notification is still talking.
+pub(super) fn turn_error_text<'a>(backend: &str, notice: Option<&str>, text: &'a str) -> Option<&'a str> {
+    let notified = backend == "pi" && notice == Some("error");
+    text.strip_prefix(TURN_ERROR).filter(|_| notified)
+}
+
+/// The prompt's answer `done`, failed with `error` when pi ended the turn in one and pi-acp still answered `end_turn`.
+pub(super) fn turn_result(done: Result<Value>, error: Option<String>) -> Result<Value> {
+    match error {
+        Some(error) if done.as_ref().is_ok_and(|v| StopReason::of(v) == StopReason::EndTurn) => Err(turn_error(&error)),
+        _ => done,
+    }
+}
+
+/// The failure of a turn pi ended in `message` (pi's words: `503: {…}`). The HTTP status it starts with says why, so
+/// a busy or rate-limited provider moves the bot on to its next agent.
+fn turn_error(message: &str) -> anyhow::Error {
+    let kind = match message.split([':', ' ']).next().and_then(|s| s.parse::<u16>().ok()) {
+        Some(429) => Some("rate_limit"),
+        Some(500..=599) => Some("overloaded"),
+        _ => None,
+    };
+    RpcError { code: INTERNAL_ERROR, message: message.to_owned(), kind: kind.map(Into::into) }.into()
+}
 
 /// pi-acp's own command for pi, plus the extension beside the launcher.
 #[cfg(unix)]
@@ -122,6 +168,35 @@ mod tests {
             json!({"manage": {"command": "/bin/codync-host", "args": ["mcp", "manage"],
                 "env": {"CODYNC_HOME": "/h"}, "exposure": "direct", "timeout": 330}})
         );
+    }
+
+    #[test]
+    fn a_busy_provider_moves_the_bot_on() {
+        use crate::agent::fallback::reason::{Reason, of};
+        assert!(EXTENSION.contains(TURN_ERROR));
+        let busy = turn_error(r#"503: {"message":"queued: upstream busy, try again in 60s"}"#);
+        assert_eq!(of(&busy), Some(Reason::Overloaded));
+        assert!(busy.to_string().contains("upstream busy"));
+        assert_eq!(of(&turn_error("429 Too Many Requests")), Some(Reason::RateLimited));
+        assert_eq!(of(&turn_error("400: context too long")), None);
+        assert_eq!(of(&turn_error("pi's model request failed")), None);
+    }
+
+    #[test]
+    fn only_an_ended_turn_fails_with_pi_s_error() {
+        let ended = || Ok(json!({ "stopReason": "end_turn" }));
+        let error = || Some("503: busy".to_owned());
+        let notified = Some("error");
+        let quoted = format!("{TURN_ERROR}503: busy");
+        assert_eq!(turn_error_text("pi", notified, &quoted), Some("503: busy"));
+        assert_eq!(turn_error_text("pi", notified, "a reply"), None);
+        // Quoted in a reply, by pi or another agent, it is the reply's text.
+        assert_eq!(turn_error_text("pi", None, &quoted), None);
+        assert_eq!(turn_error_text("claude", notified, &quoted), None);
+        assert!(turn_result(ended(), error()).is_err());
+        assert!(turn_result(ended(), None).is_ok());
+        let cancelled = json!({ "stopReason": "cancelled" });
+        assert_eq!(turn_result(Ok(cancelled.clone()), error()).expect("not failed"), cancelled);
     }
 
     #[test]

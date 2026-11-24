@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { AccountApproval, PairingInfo } from '@shared/models'
 import { newSSHProfile, type SSHProfile } from '@shared/ssh'
-import { Button, CardSection, IconButton, Reveal, Spinner, Switch } from '../../components/Controls'
+import { Button, CardSection, IconButton, Reveal, Switch } from '../../components/Controls'
 import { Icon } from '../../components/Icon'
 import { Dialog, ModalHeader, Sheet, useDismiss } from '../../components/Overlay'
 import { HStack, Spacer, VStack } from '../../components/Stack'
 import { Text } from '../../components/Text'
+import { limitCloudName, offlineCloudStatus, placementLine, type StatusLine } from '../../lib/cloud-computer'
 import { useModel } from '../../lib/observable'
 import { useAccount } from '../../store/account'
 import { analytics } from '../../store/analytics'
@@ -15,10 +16,14 @@ import { StoreContext, useApp } from '../../store/context'
 import { ComputerBadge } from '../ComputerBadge'
 import { PairingCode } from '../PairingCode'
 import { AuthorizedDevicesSection } from './AuthorizedDevicesSection'
+import { ResetSection } from './ResetSection'
 import { ComputersUsedSection } from './ComputersUsedSection'
 import { leavingRemovesText, withJoinRemoves } from '../../lib/account-copy'
 import { useJoinRemoves, useLeaveRemoves } from '../use-join-removes'
 import { cloudStatusLine } from '../../lib/relay-copy'
+import { CodyncCloudSection } from './CodyncCloudSection'
+import { CodyncVersionRow } from './CodyncVersionRow'
+import { NameDialog, type Naming } from '../NameDialog'
 import { useTr } from '../../lib/use-language'
 import { errorText, liveClient, relativeDay, SectionHeader, statusText, thisMac } from './parts'
 import { RelayAddressRow, RelayTokenRow } from './RelayFields'
@@ -44,7 +49,8 @@ export function ComputersView() {
   // A computer this app reaches (an SSH one) can name what goes; any other gets the general warning.
   const removingNames = useLeaveRemoves(managed.find((store) => store.computer.id === removing?.computerId) ?? null, removing !== null)
   // Every computer in the account but this one, the SSH computers too: their cards above are about managing them.
-  const others = cloud.computers.filter((c) => c.computerId !== app.local?.computer.id)
+  // Account computers this app isn't using (iOS `accountOnly`): the ones it uses have their own card or section.
+  const others = cloud.computers.filter((c) => !app.store(c.computerId))
   const addSSH = (host: string) => setEditing({ profile: { ...newSSHProfile(window.codync.hostPort), host }, isNew: true })
 
   return (
@@ -72,6 +78,8 @@ export function ComputersView() {
           ))}
           <SSHConfigSuggestions add={addSSH} />
         </div>
+
+        <CodyncCloudSection />
 
         <div>
           <SectionHeader title="Other computers in your account">
@@ -119,6 +127,7 @@ function ManagedComputerCard({ store, ssh: overSSH, nested = false }: { store: B
   const [confirmUnclaim, setConfirmUnclaim] = useState(false)
   const [confirmAutoApproval, setConfirmAutoApproval] = useState(false)
   const [askAccount, setAskAccount] = useState(false)
+  const [naming, setNaming] = useState<Naming | null>(null)
   const cloud = store.cloud
   const owner = cloud?.owner ?? null
   const autoApproval = cloud?.approval === 'auto'
@@ -192,11 +201,19 @@ function ManagedComputerCard({ store, ssh: overSSH, nested = false }: { store: B
                 {`${tr(overSSH ? 'Over SSH' : isMacLabel)} · ${tr(statusText(store))}`}
               </Text>
             </VStack>
+            {store.canRename ? (
+              <IconButton title="Computer name" icon="pencil" onClick={() => setNaming({
+                title: 'Computer name', name, message: 'Leave it empty to use the hostname.', save: (typed) => void store.setComputerName(typed),
+              })} />
+            ) : null}
             {overSSH ? (
               // This computer's voice settings are their own Settings page.
               <IconButton title="Voice chat" icon="waveform" selected={showVoice} disabled={!online} onClick={() => setShowVoice((s) => !s)} />
             ) : null}
-            <IconButton title="Pair iPhone" icon="qrcode" selected={showPairing} disabled={!online} onClick={() => setShowPairing((s) => !s)} />
+            {store !== app.local && store.screen ? (
+              <IconButton title="Screen" icon="display" disabled={!app.canOpenScreen(store)} onClick={() => app.openScreen(store.computer.id)} />
+            ) : null}
+            <IconButton title="Pair phone" icon="qrcode" selected={showPairing} disabled={!online} onClick={() => setShowPairing((s) => !s)} />
           </div>,
           // Until the host gives its cloud status, there's no way to tell its relay or account.
           ...(cloud
@@ -254,6 +271,12 @@ function ManagedComputerCard({ store, ssh: overSSH, nested = false }: { store: B
                   : []),
               ]
             : []),
+          // Hosts before 2.45.1 have no automatic order.
+          online && store.autoOrder != null ? (
+            <Switch key="auto-order" className="settings-appear" on={store.autoOrder} onChange={(on) => void run(() => store.setAutoOrder(on))}>
+              Move active bots to the top
+            </Switch>
+          ) : null,
           // On macOS and Windows this computer's Codync is this app: its version and update are on the Updates page.
           // Kept while an update asked from here restarts the computer: its spinner says it's updating.
           (online || store.isUpdating) && store.hello && !(store === app.local && window.codync.platform !== 'linux')
@@ -268,13 +291,16 @@ function ManagedComputerCard({ store, ssh: overSSH, nested = false }: { store: B
 
       {nested ? null : <AuthorizedDevicesSection store={store} />}
 
+      {store === app.local ? <ResetSection store={store} /> : null}
+
+      <NameDialog naming={naming} placeholder="Name" limit={limitCloudName} clean={(typed) => typed.trim()} onClose={() => setNaming(null)} />
       <Sheet open={showVoice} onClose={() => setShowVoice(false)}>
         <StoreContext.Provider value={store}>
           <VoiceChatSettingsView />
         </StoreContext.Provider>
       </Sheet>
       <Sheet open={showPairing} onClose={() => setShowPairing(false)} width={340}>
-        <ModalHeader icon="qrcode" title={tr('Pair iPhone with {name}').replaceAll('{name}', name)} />
+        <ModalHeader icon="qrcode" title={tr('Pair phone with {name}').replaceAll('{name}', name)} />
         <PairingPanel store={store} />
       </Sheet>
       <Dialog
@@ -307,41 +333,14 @@ function ManagedComputerCard({ store, ssh: overSSH, nested = false }: { store: B
   )
 }
 
-/** The Codync a computer runs, and its update when one is due (iOS `CodyncVersionRow`). */
-export function CodyncVersionRow({ store }: { store: BotStore }) {
-  const tr = useTr()
-  // Moved on when an update asked from here runs out of time, so one that never finished is offered again.
-  const [now, setNow] = useState(Date.now)
-  const ends = store.hostUpdateWaitEnds
-  useEffect(() => {
-    if (ends === null) return
-    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, ends - Date.now()))
-    return () => clearTimeout(timer)
-  }, [ends])
-  const line = store.hostVersionLine(Math.max(now, Date.now()))
-  if (!line) return null
-  return (
-    <div className="settings-row settings-appear">
-      <Icon name="arrow.down.circle" size={13} color="var(--secondary)" />
-      <VStack grow className="settings-stack">
-        <Text>Codync <Text tone="secondary" tabular>{line.version}</Text></Text>
-        {line.detail.length > 0 ? (
-          <Text size="caption" tone={line.warns ? 'attention' : 'secondary'}>{line.detail.map((sentence) => tr(sentence)).join(' ')}</Text>
-        ) : null}
-      </VStack>
-      {line.accessory?.kind === 'updating' ? <Spinner />
-        : line.accessory ? <Button onClick={() => store.requestHostUpdate()}>{line.accessory.title}</Button>
-        : null}
-    </div>
-  )
-}
-
 /**
  * An account computer this app isn't authorized on, or one it uses under an earlier identity (`olderCopy`). An
- * offline one can be removed: a computer that was reset or given away never comes back under that identity.
+ * offline one can be removed: a computer that was reset or given away never comes back under that identity. A
+ * cloud computer says where it runs, sleeping isn't offline, and it is deleted in its own section instead.
  */
 function AccountComputerRow({ computer, olderCopy, onRemove }: { computer: CloudComputer; olderCopy: boolean; onRemove: () => void }) {
   const tr = useTr()
+  const status = accountComputerStatus(computer, olderCopy)
   return (
     <div className="settings-card settings-appear">
       <div className="settings-row">
@@ -350,22 +349,26 @@ function AccountComputerRow({ computer, olderCopy, onRemove }: { computer: Cloud
         </span>
         <div className="settings-stack">
           <Text size="callout" weight="medium" tone={olderCopy ? 'secondary' : undefined}>{computer.name}</Text>
-          <Text size="caption" tone={olderCopy ? 'tertiary' : 'secondary'}>{tr(accountComputerStatus(computer, olderCopy))}</Text>
+          {computer.cloud ? <Text size="caption" tone="secondary">{placementLine(computer.cloud, tr)}</Text> : null}
+          <Text size="caption" tone={status.error ? 'danger' : olderCopy ? 'tertiary' : 'secondary'}>{tr(status.text)}</Text>
         </div>
         <Spacer />
-        {computer.online ? null : <IconButton title="Remove from account" icon="trash" onClick={onRemove} />}
+        {/* A cloud computer goes with Delete cloud computer, in its own section. */}
+        {computer.online || computer.cloud ? null : <IconButton title="Remove from account" icon="trash" onClick={onRemove} />}
       </div>
     </div>
   )
 }
 
 /** "Older copy", not the phones' "Older copy of this computer": on the desktop "this computer" reads as this Mac. */
-function accountComputerStatus(computer: CloudComputer, olderCopy: boolean) {
-  if (!olderCopy) return computer.online ? 'Online' : 'Offline'
-  return computer.lastSeenAt ? `Older copy · last seen ${relativeDay(new Date(computer.lastSeenAt))}` : 'Older copy'
+function accountComputerStatus(computer: CloudComputer, olderCopy: boolean): StatusLine {
+  const line = (text: string) => ({ text, error: false })
+  if (computer.online) return line('Online')
+  if (!olderCopy) return offlineCloudStatus(computer.cloud) ?? line('Offline')
+  return line(computer.lastSeenAt ? `Older copy · last seen ${relativeDay(new Date(computer.lastSeenAt))}` : 'Older copy')
 }
 
-/** "Pair iPhone" for a computer this app manages, through its store. */
+/** "Pair phone" for a computer this app manages, through its store. */
 function PairingPanel({ store }: { store: BotStore }) {
   useModel(store)
   const requestCode = useCallback(async () => {
@@ -405,7 +408,7 @@ function SSHProfileEditor({ profile: initial, isNew }: { profile: SSHProfile; is
       remotePort: Number(remote),
     }
     const found = await bridge.save(p)
-    if (found) return setProblem(found)
+    if (found) return setProblem(tr(found))
     dismiss()
   }
 

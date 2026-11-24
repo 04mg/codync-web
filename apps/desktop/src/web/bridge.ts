@@ -26,6 +26,9 @@ const updates: UpdateState = {
 }
 
 /** Builds the bridge; `loadWebConfig()` must have finished. */
+/** Someone is looking at this tab. */
+const attended = () => document.visibilityState === 'visible'
+
 export async function installBridge() {
   installAppearance()
   installShortcuts()
@@ -71,6 +74,17 @@ export async function installBridge() {
         return () => {}
       },
     },
+    // Computers are reached through `remote` (the browser's own channel), not the desktop main process's.
+    channel: {
+      call: unavailable('The desktop relay channel'),
+      stream: (_id, _key, _path, _onData, onEnd) => {
+        queueMicrotask(() => onEnd({ status: 0, message: "The web client reaches computers through its own channel." }))
+        return () => {}
+      },
+      onPresence: none,
+    },
+    // Alerts reach the browser through its own tab notifications (`browser.notifications`).
+    notifications: { supported: false, enabled: async () => false, setEnabled: async () => false, show() {} },
     account: {
       state: async (): Promise<AccountState> => account.state,
       onChange: (cb) => account.onChange(cb),
@@ -114,11 +128,22 @@ export async function installBridge() {
       newBot() {},
       openApp() {},
     },
-    cloud: { request: (method, path, body, signed) => account.cloudRequest(method, path, body, signed) },
+    cloud: {
+      request: (method, path, body, signed) => account.cloudRequest(method, path, body, signed),
+      // Codync Cloud computers aren't offered in the browser.
+      requestAccess: async () => ({ ok: false, error: { status: 0, code: 'unsupported', message: 'Codync Cloud computers are not available in the browser.' } }),
+    },
     updates: { state: async () => updates, onChange: none, check() {}, install() {}, setAutoCheck() {}, setAutoDownload() {} },
     artifacts,
     files,
     app: {
+      attended: async () => attended(),
+      onAttended: (cb) => {
+        const report = () => cb(attended())
+        document.addEventListener('visibilitychange', report)
+        return () => document.removeEventListener('visibilitychange', report)
+      },
+      remoteKeyboard() {},
       reportError: (report) => console.error('Codync error', report),
       openExternal: (url) => {
         if (/^https?:\/\//i.test(url) || /^mailto:/i.test(url)) window.open(url, '_blank', 'noopener,noreferrer')

@@ -41,6 +41,27 @@ async fn a_steered_message_joins_the_running_turn() {
 }
 
 #[tokio::test]
+async fn a_steered_message_goes_out_again_when_its_agent_cancels_the_turn_before_a_word() {
+    if python_missing() {
+        return;
+    }
+    let host = Host::start().await;
+    let bot = host.fixture_bot("Drops", "steer_agent.py", "drops 30").await;
+    let (_, second) = queue_behind_a_turn(&host, &bot).await;
+    host.call("steer", json!({"botId": bot, "entryId": second})).await;
+    eventually("the message got a turn of its own", Duration::from_secs(20), async || {
+        host.requests(&bot, "session/prompt").len() == 2 && idle(&host, &bot).await
+    })
+    .await;
+
+    let prompts = host.requests(&bot, "session/prompt");
+    assert!(prompts[1]["params"]["prompt"].to_string().contains("second"), "{}", prompts[1]);
+    assert_eq!(status(&host, &bot, &second).await, "sent");
+    let reply = entries(&host, &bot).await.into_iter().rev().find(|e| e["data"]["final"] == true).unwrap();
+    assert!(reply["data"]["text"].as_str().unwrap().contains("second"), "{reply}");
+}
+
+#[tokio::test]
 async fn a_steered_message_gets_its_reply_even_after_the_bot_used_send_message() {
     if python_missing() {
         return;
@@ -74,12 +95,43 @@ async fn a_steered_message_gets_its_reply_even_after_the_bot_used_send_message()
 }
 
 #[tokio::test]
+async fn a_voice_note_sent_before_a_message_joined_keeps_earlier_text_in_the_trace() {
+    if python_missing() {
+        return;
+    }
+    let host = Host::start().await;
+    let bot = host.fixture_bot("Voice", "steer_agent.py", "voice 30").await;
+    let (_, second) = queue_behind_a_turn(&host, &bot).await;
+    let find =
+        async |text: &str| entries(&host, &bot).await.into_iter().find(|e| e["data"]["text"].as_str() == Some(text));
+    eventually("the bot sent its voice note", Duration::from_secs(20), async || {
+        find("Listen before it joined").await.is_some()
+    })
+    .await;
+    host.call("steer", json!({"botId": bot, "entryId": second})).await;
+    eventually("the turn ended", Duration::from_secs(20), async || {
+        status(&host, &bot, &second).await == "sent" && idle(&host, &bot).await
+    })
+    .await;
+
+    let note = find("Listen before it joined").await.unwrap();
+    assert_eq!((&note["data"]["final"], &note["data"]["voiceNote"]), (&json!(true), &json!(true)));
+    assert_eq!(
+        find("Working").await.unwrap()["data"]["final"],
+        false,
+        "what it wrote before the note stays in the trace"
+    );
+}
+
+#[tokio::test]
 async fn behind_other_work_a_steered_message_goes_first_in_line() {
     if python_missing() {
         return;
     }
     let host = Host::start().await;
     let bot = host.fixture_bot("Behind", "steer_agent.py", "steer 5").await;
+    // Routine runs as turns in the chat are what this is about; in a box they wouldn't hold the chat.
+    host.works_in_chat(&bot).await;
     let mut routines = vec![];
     for name in ["The running routine", "The waiting routine"] {
         let body = json!({"botId": bot, "name": name, "instruction": name, "triggers": [{"type": "webhook"}], "timeoutSeconds": 60});
@@ -123,6 +175,27 @@ async fn steering_an_agent_that_cannot_stops_the_turn_for_the_message() {
     .await;
     assert_eq!(host.requests(&bot, "_session/steering"), Vec::<Value>::new());
     assert_eq!(host.requests(&bot, "session/cancel").len(), 1);
+    let prompt = &host.requests(&bot, "session/prompt")[1]["params"]["prompt"][0]["text"];
+    assert!(prompt.as_str().unwrap().contains("second"), "{prompt}");
+    assert_eq!(status(&host, &bot, &second).await, "sent");
+    host.call("stop", json!({"botId": bot})).await;
+}
+
+#[tokio::test]
+async fn a_new_session_stops_the_running_turn_and_the_queued_message_opens_it() {
+    if python_missing() {
+        return;
+    }
+    let host = Host::start().await;
+    let bot = host.fixture_bot("Fresh", "steer_agent.py", "plain 30").await;
+    let (_, second) = queue_behind_a_turn(&host, &bot).await;
+    host.call("newSession", json!({"botId": bot})).await;
+    eventually("the queued message started its own turn", Duration::from_secs(20), async || {
+        host.requests(&bot, "session/prompt").len() == 2
+    })
+    .await;
+    assert_eq!(host.requests(&bot, "session/cancel").len(), 1);
+    assert_eq!(host.requests(&bot, "session/new").len(), 2, "the queued message runs in the new session");
     let prompt = &host.requests(&bot, "session/prompt")[1]["params"]["prompt"][0]["text"];
     assert!(prompt.as_str().unwrap().contains("second"), "{prompt}");
     assert_eq!(status(&host, &bot, &second).await, "sent");
@@ -238,14 +311,16 @@ async fn a_message_the_agent_leaves_for_later_goes_before_other_work() {
         return;
     }
     let host = Host::start().await;
-    let bot = host.fixture_bot("Ahead", "steer_agent.py", "next 3").await;
+    // The first turn outlasts the setup below even on a slow CI runner: a steer that only arrives after it ended
+    // finds the routine's turn running, and the message rightly waits behind it.
+    let bot = host.fixture_bot("Ahead", "steer_agent.py", "next 15").await;
     turn_running(&host, &bot).await;
     let body = json!({"botId": bot, "name": "Other work", "instruction": "Other work", "triggers": [{"type": "webhook"}], "timeoutSeconds": 60});
     let routine = host.call("saveRoutine", body).await["routine"]["id"].clone();
     host.call("runRoutine", json!({"botId": bot, "id": routine})).await;
     let second = host.call("send", json!({"botId": bot, "text": "second"})).await["entry"]["id"].clone();
     host.call("steer", json!({"botId": bot, "entryId": second})).await;
-    eventually("all three had their turns", Duration::from_secs(30), async || {
+    eventually("all three had their turns", Duration::from_mins(1), async || {
         host.requests(&bot, "session/prompt").len() == 3
     })
     .await;

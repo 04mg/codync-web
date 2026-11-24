@@ -59,6 +59,7 @@ import kotlinx.serialization.json.put
     var confirmForget by remember { mutableStateOf<AppState?>(null) }
     var confirmRevoke by remember { mutableStateOf<CloudComputer?>(null) }
     var coloring by remember { mutableStateOf<String?>(null) }
+    var naming by remember { mutableStateOf<Naming?>(null) }
     var voice by remember { mutableStateOf<String?>(null) }
     var network by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(app.contextId) { accounts.refreshCloud() }
@@ -73,6 +74,8 @@ import kotlinx.serialization.json.put
                 CardSection {
                     computerRows(state, store, inAccount != null, app.isStale(state, states), app.access[id]?.code, app.account.userId != null,
                         ComputerActions({ extensions(id) }, store::openScreen, voice = { voice = id }, network = { network = id }, color = { coloring = id },
+                            rename = { naming = Naming("Computer name", state.hello?.text("name") ?: state.computer.name, "Leave it empty to use the hostname.",
+                                store::setComputerName) },
                             ask = inAccount?.let { c -> { ask(c) } }, revoke = inAccount?.takeIf { it.isGranted }?.let { c -> { confirmRevoke = c } }) {
                             confirmForget = state
                         })
@@ -86,6 +89,7 @@ import kotlinx.serialization.json.put
                         asking = computer.computerId in app.asking, ask = { ask(computer) }, revoke = { confirmRevoke = computer })
                 }
             }
+            if (signedIn) CloudSettings(app, accounts)
             val hidden = states.flatMap { state -> state.bots.filter { it.hidden && !it.deleted }.map { state to it } }
             if (hidden.isNotEmpty()) CardSection("Hidden bots") {
                 for ((state, bot) in hidden) row { accounts.store(state.computer.id)?.let { HiddenBotRow(state, it, bot) } }
@@ -108,6 +112,7 @@ import kotlinx.serialization.json.put
     CodyncSheet(networkState?.network?.let { networkState to it }, { network = null }) { (state, view) ->
         accounts.store(state.computer.id)?.let { NetworkSheet(view, it::refreshNetwork) }
     }
+    NameDialog(naming, "Name", { naming = null }, { it.take(CLOUD_NAME_LIMIT) }) { it.trim() }
     SwatchPanel(coloring != null, states.firstOrNull { it.computer.id == coloring }?.computer?.color, { coloring = null }) {
         accounts.store(coloring)?.setColor(it)
     }
@@ -124,7 +129,7 @@ import kotlinx.serialization.json.put
 
 /** What the paired computer's row and its menu open; `revoke` is set when this phone's account access can be revoked. */
 private class ComputerActions(val extensions: () -> Unit, val screen: () -> Unit, val voice: () -> Unit, val network: () -> Unit, val color: () -> Unit,
-    val ask: (() -> Unit)?, val revoke: (() -> Unit)?, val remove: () -> Unit)
+    val rename: () -> Unit, val ask: (() -> Unit)?, val revoke: (() -> Unit)?, val remove: () -> Unit)
 
 /**
  * The paired computer as the rows of its card: its connection and whether it's in the account, then
@@ -143,6 +148,12 @@ private fun CardRows.computerRows(state: AppState, store: AppStore, inAccount: B
     if (BuildConfig.PUSH_CONFIGURED) row {
         ComputerNotificationsRow(state.computer.notifications, store::notifications)
     }
+    val autoOrder = autoOrder(state.hello)
+    if (state.connection is LinkState.Ready && autoOrder != null) row {
+        CodyncSwitch(autoOrder, store::setAutoOrder, Modifier.fillMaxWidth()) {
+            RowLabel("Move active bots to the top", "arrow.up", modifier = Modifier.weight(1f))
+        }
+    }
     row { ConnectionRow(state.computer, store) }
     if (canAddToAccount(signedIn, state)) row { AddToAccount(store) }
     // Kept while an update asked from here restarts the computer: its spinner says it's updating.
@@ -153,6 +164,7 @@ private fun CardRows.computerRows(state: AppState, store: AppStore, inAccount: B
 /** Name, connection, and an access request when this phone can't reach the computer; a long press opens its menu. */
 @Composable private fun ComputerSummary(state: AppState, inAccount: Boolean, stale: Boolean, code: String?, actions: ComputerActions) {
     val computer = state.computer
+    val cloud = state.cloudHosting
     val link = state.connection
     val online = link is LinkState.Ready
     val detail = if (link is LinkState.Ready) {
@@ -162,6 +174,7 @@ private fun CardRows.computerRows(state: AppState, store: AppStore, inAccount: B
     Column(Modifier.fillMaxWidth().contextActions(items = {
         listOfNotNull(
             MenuItem("Color", icon = "paintpalette", action = actions.color),
+            if (canRename(state)) MenuItem("Rename…", icon = "pencil", action = actions.rename) else null,
             if (online) MenuItem("Extensions", icon = "square.grid.2x2", action = actions.extensions) else null,
             if (online) MenuItem("Voice chat", icon = "waveform", action = actions.voice) else null,
             if (online && state.screen != null) MenuItem("Screen", icon = "display", action = actions.screen) else null,
@@ -175,8 +188,14 @@ private fun CardRows.computerRows(state: AppState, store: AppStore, inAccount: B
             Text(state.hello?.text("name") ?: computer.name, Modifier.weight(1f), style = Type.body.semibold, color = Palette.text)
             if (inAccount) Symbol("person.crop.circle.badge.checkmark", size = 20.dp, tint = Palette.tertiary, contentDescription = "In your account")
         }
-        val unreachable = (link is LinkState.ComputerOffline || link is LinkState.Failed) && !state.isUpdating
-        Text(detail, style = Type.footnote, color = if (unreachable) Palette.warning else Palette.secondary)
+        if (cloud != null) Text(cloud.runsOn(), style = Type.footnote, color = Palette.secondary)
+        val unreachable = state.unreachable
+        val ink = when {
+            !unreachable -> Palette.secondary
+            cloud?.failed == true -> Palette.danger
+            else -> Palette.warning
+        }
+        Text(tr(detail), style = Type.footnote, color = ink)
         if (unreachable && actions.ask != null) {
             SecondaryButton(if (code != null) "Show code" else "Ask for access", action = actions.ask)
         }
@@ -249,24 +268,31 @@ private const val NETWORK_ICON = "codync.network"
 
 /**
  * A computer in the account that this phone can't use yet; [asking] while this phone's request is on its way to it.
- * [revoke] takes back an earlier install's approval first; without it, asking offers to replace that approval.
+ * [revoke] takes back an earlier install's approval first; without it, asking offers to replace that approval. A cloud
+ * computer approves by itself: no code to check, and asleep isn't offline.
  */
 @Composable internal fun AccountComputerRow(computer: CloudComputer, code: String?, asking: Boolean, ask: () -> Unit,
     revoke: (() -> Unit)? = null) {
-    val online = if (computer.online == true) "Online" else "Offline"
+    val cloud = computer.cloud
+    val online = cloud?.offlineText ?: if (computer.online == true) "Online" else "Offline"
     val detail = when {
+        cloud != null && asking -> tr("Connecting to {name}…").replace("{name}", computer.name)
         code != null -> "Waiting for your OK on the computer · $code"
         computer.isGranted && revoke != null -> "Approved for an earlier install of Codync. Revoke it, then ask again."
         computer.access == "pending" -> "$online · A request is waiting"
+        cloud != null -> tr(online)
         else -> "$online · In your account"
     }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Box(Modifier.graphicsLayer { alpha = 0.5f }) { ComputerBadge(computer.device, 40.dp) }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(computer.name, style = Type.body.semibold, color = Palette.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(tr(detail), style = Type.subheadline, color = Palette.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (cloud != null) Text(cloud.runsOn(), style = Type.footnote, color = Palette.secondary)
+            Text(tr(detail), style = Type.subheadline, color = if (cloud?.failed == true) Palette.danger else Palette.secondary,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         when {
+            cloud != null && asking -> Spinner()
             code != null -> SecondaryButton("Code", action = ask)
             computer.isGranted && revoke != null -> SecondaryButton("Revoke", action = revoke)
             else -> SecondaryButton("Ask for access", enabled = !asking, action = ask)
@@ -348,5 +374,6 @@ internal fun computerSymbol(device: String?): String = when (device) {
     "macstudio" -> "macstudio"
     "macpro" -> "macpro.gen3"
     "linux" -> "computer.linux"
+    "cloud" -> "cloud"
     else -> "desktopcomputer"
 }
